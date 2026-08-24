@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  seller-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: seller_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - seller_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  seller-service:
+    build: .
+    ports:
+      - "8083:8083"
+    environment:
+      - PORT=8083
+      - DB_HOST=seller-db
+      - DB_PORT=5432
+      - DB_NAME=seller_db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - AUTH_SERVICE_URL=http://host.docker.internal:8081
+    depends_on:
+      seller-db:
+        condition: service_healthy
+
+volumes:
+  seller_db_data:
