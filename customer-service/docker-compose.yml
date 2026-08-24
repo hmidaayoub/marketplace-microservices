@@ -28,7 +28,7 @@ services:
       - DB_NAME=customer_db
       - DB_USER=postgres
       - DB_PASSWORD=postgres
-      - AUTH_SERVICE_URL=http://auth-service:8081
+      - AUTH_SERVICE_URL=http://host.docker.internal:8081
     depends_on:
       customer-db:
         condition: service_healthy
