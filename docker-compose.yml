@@ -58,6 +58,16 @@ services:
     volumes: [request_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
+  offer-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: offer_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5436:5432"]
+    volumes: [offer_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
   auth-service:
     build:
       context: .
@@ -136,8 +146,29 @@ services:
       retries: 12
       start_period: 10s
 
+  # The Python service. It resolves the token's userId to a sellerId through
+  # seller-service and validates the target request through request-service.
+  offer-service:
+    build:
+      context: .
+      dockerfile: offer-service/Dockerfile
+    ports: ["8085:8085"]
+    environment:
+      <<: *secrets
+      DB_HOST: offer-db
+      DB_NAME: offer_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      SELLER_SERVICE_URL: http://seller-service:8083
+      REQUEST_SERVICE_URL: http://request-service:8084
+    depends_on:
+      offer-db: {condition: service_healthy}
+      seller-service: {condition: service_started}
+      request-service: {condition: service_healthy}
+
 volumes:
   auth_db_data:
   customer_db_data:
   seller_db_data:
   request_db_data:
+  offer_db_data:

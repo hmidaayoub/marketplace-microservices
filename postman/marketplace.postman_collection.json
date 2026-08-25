@@ -72,6 +72,14 @@
     {
       "key": "runSuffix",
       "value": ""
+    },
+    {
+      "key": "offerUrl",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "offerId",
+      "value": ""
     }
   ],
   "item": [
@@ -901,7 +909,329 @@
       ]
     },
     {
-      "name": "6. Internal (service-to-service)",
+      "name": "6. Offer",
+      "description": "Seller proposals against the aggregated demand. An offer may only target a request that exists (R5) and always starts PENDING (R6).",
+      "item": [
+        {
+          "name": "Submit offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "R5: validated against request-service before it is stored. R6: starts PENDING whatever the caller asks for.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 6,\n  \"pricePerUnit\": \"149.99\",\n  \"currency\": \"EUR\",\n  \"description\": \"Sealed, 24 month warranty\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"offerId\", b.offerId);",
+                  "pm.test(\"starts PENDING\", () => pm.expect(b.status).to.eql(\"PENDING\"));",
+                  "pm.test(\"recorded against the sellerId of the caller\", () =>",
+                  "    pm.expect(b.sellerId).to.eql(pm.collectionVariables.get(\"sellerId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit offer for a request that does not exist -> 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "R5: an offer only makes sense against demand that exists.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"11111111-1111-1111-1111-111111111111\",\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not found\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get offer (owner)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "description": "The owning seller sees their own offer in full."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"owner sees sellerId\", () => pm.expect(pm.response.json()).to.have.property(\"sellerId\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get offers for request (customer)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/request/{{requestId}}",
+            "description": "A customer on the request sees the offers in full, so they can see what has been proposed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"includes the offer\", () => pm.expect(pm.response.json().length).to.be.above(0));",
+                  "pm.test(\"customer sees sellerId\", () =>",
+                  "    pm.expect(pm.response.json()[0]).to.have.property(\"sellerId\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My offers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/me",
+            "description": "Every offer made by the calling seller."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"returns a list\", () => pm.expect(pm.response.json()).to.be.an(\"array\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update own PENDING offer",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "description": "Terms can still change while the offer is awaiting review.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"availableQuantity\": 8,\n  \"pricePerUnit\": \"139.00\",\n  \"currency\": \"EUR\",\n  \"description\": \"Revised price\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"terms updated\", () => {",
+                  "    pm.expect(b.availableQuantity).to.eql(8);",
+                  "    pm.expect(b.pricePerUnit).to.eql(\"139.00\");",
+                  "});",
+                  "pm.test(\"still PENDING\", () => pm.expect(b.status).to.eql(\"PENDING\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer cannot submit an offer -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "Only sellers make offers.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offer with a caller-supplied sellerId -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "Identity comes from the token. An unknown field is rejected, not ignored.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\",\n  \"sellerId\": \"11111111-1111-1111-1111-111111111111\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offer with an invalid currency -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "Currency must be a three-letter ISO-4217 code; the database enforces the same shape.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EURO\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed offerId -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/not-a-uuid",
+            "description": "Reads identically to the Java and Go services."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"same wording as the other services\", () =>",
+                  "    pm.expect(pm.response.json().message).to.eql(\"Invalid value for parameter 'offerId'\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Internal (service-to-service)",
       "item": [
         {
           "name": "Get user identity",
@@ -1087,11 +1417,150 @@
               }
             }
           ]
+        },
+        {
+          "name": "Internal: pending offers",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{offerUrl}}/internal/offers/pending",
+            "description": "The admin review queue. Admin/Contact reads this to build its pending list."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"only PENDING offers appear\", () =>",
+                  "    pm.response.json().forEach(o => pm.expect(o.status).to.eql(\"PENDING\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: approve offer",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{offerUrl}}/internal/offers/{{offerId}}/status",
+            "description": "Records an admin decision relayed by Admin/Contact (R7 is enforced there, not here).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"APPROVED\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status recorded\", () => pm.expect(pm.response.json().status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: decide the same offer twice -> 409",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{offerUrl}}/internal/offers/{{offerId}}/status",
+            "description": "A decided offer cannot be silently overwritten by a second decision.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"REJECTED\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"conflict\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: offers endpoint without the key -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{offerUrl}}/internal/offers/pending",
+            "description": "The internal guard fails closed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: offers endpoint with a user JWT -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/internal/offers/pending",
+            "description": "A user token is not an internal credential."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "7. Negative cases",
+      "name": "8. Negative cases",
       "item": [
         {
           "name": "No credentials -> 401",
@@ -1454,11 +1923,44 @@
               }
             }
           ]
+        },
+        {
+          "name": "Update a decided offer -> 409",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "description": "Runs after approval: the terms are frozen because contact permission may already have been granted against exactly what the admin saw.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"conflict\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "8. Health",
+      "name": "9. Health",
       "item": [
         {
           "name": "Auth health",
@@ -1557,11 +2059,32 @@
               }
             }
           ]
+        },
+        {
+          "name": "Offer service health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{offerUrl}}/actuator/health",
+            "description": "offer-service serves /actuator/health and /health, so probes are configured identically across the platform."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"up\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"reports UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "9. Session teardown",
+      "name": "10. Session teardown",
       "item": [
         {
           "name": "Leave request",

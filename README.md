@@ -16,17 +16,20 @@ seller service ever stores or returns one.
 | Customer | 8082 | `customer_db` | Implemented |
 | Seller | 8083 | `seller_db` | Implemented |
 | Request | 8084 | `request_db` | Implemented (Go) |
-| Offer | 8085 | `offer_db` | Not started |
+| Offer | 8085 | `offer_db` | Implemented (Python) |
 | Admin/Contact | 8086 | `admin_contact_db` | Not started |
 | Notification | 8087 | `notification_db` | Not started |
 | API Gateway | 8080 | — | Not started |
 
-82 tests pass across the four Maven modules, and 46 across the Go module.
+184 tests pass in total: 82 across the four Maven modules, 46 in the Go module, 56 in
+the Python module.
 
-The platform is deliberately polyglot from here on: Auth, Customer and Seller are Spring
-Boot, Request is Go. They interoperate only through HTTP and a shared JWT secret, which
-is the boundary the architecture already assumed - no service reads another's database,
-so the language behind an endpoint is not something its callers can observe.
+The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
+Request is Go, Offer is Python. They interoperate only through HTTP and a shared JWT
+secret, which is the boundary the architecture already assumed - no service reads
+another's database, so the language behind an endpoint is not something its callers can
+observe. All three stacks return the same error shape, and a malformed path variable
+reads identically whichever one answers it.
 
 ## Tech Stack
 
@@ -57,6 +60,20 @@ so the language behind an endpoint is not something its callers can observe.
 | JWT | golang-jwt v5 | Verifies tokens minted by auth-service's jjwt |
 | Integration testing | testcontainers-go (PostgreSQL 15) | Real Postgres, real migrations |
 
+### Python stack (offer-service)
+
+| Concern | Choice | Notes |
+|---|---|---|
+| Language | Python 3.13 | Pinned via `.python-version`; managed by uv |
+| Framework | FastAPI + uvicorn | |
+| **ORM** | **SQLAlchemy 2.0 (async) + asyncpg** | Models never create schema, mirroring `ddl-auto: validate` |
+| Schema migrations | Alembic | `migrations/versions`, applied at startup |
+| Validation | Pydantic v2 | Wire schemas kept separate from ORM models, so responses can withhold fields |
+| JWT | PyJWT | Verifies tokens minted by auth-service's jjwt |
+| Packaging | uv | `uv.lock` pins the full dependency graph |
+| Testing | pytest + testcontainers | Real Postgres, real migrations |
+| Linting | ruff | |
+
 Planned but not yet wired in: RabbitMQ, Kubernetes, Terraform, GitHub Actions,
 Prometheus & Grafana.
 
@@ -80,7 +97,8 @@ marketplace-microservices/
 ├── auth-service/
 ├── customer-service/
 ├── seller-service/
-└── request-service/    Go module, independent of the Maven reactor
+├── request-service/    Go module, independent of the Maven reactor
+└── offer-service/      Python module, independent of the Maven reactor
 ```
 
 `common-security` holds `JwtUtil`, `JwtAuthenticationFilter` and `InternalApiKeyFilter`
@@ -130,6 +148,8 @@ Endpoints deliberately return different shapes to different audiences:
 | `GET /api/sellers/{id}` | `SellerPublicResponse` | **address, userId** |
 | `GET /api/requests/{id}` | Request plus demand totals | **participant customerIds** |
 | `GET /internal/requests/{id}/participants` | `customerIds` | — |
+| `GET /api/offers/{id}` (rival seller) | `CompetingOfferOut` | **sellerId** |
+| `GET /api/offers/{id}` (owner, customer, admin) | Full offer | — |
 
 ## Request Service
 
@@ -172,9 +192,49 @@ Rules worth knowing:
   `/internal/requests/{id}/participants`, which is what Admin/Contact will use to grant
   ContactAccess — so a seller browsing demand cannot enumerate the customers behind it.
 
+## Offer Service
+
+Owns seller proposals against aggregated demand (spec section 11).
+
+| Method | Endpoint | Who |
+|---|---|---|
+| `POST` | `/api/offers` | SELLER |
+| `GET` | `/api/offers/me` | SELLER |
+| `GET` | `/api/offers/{offerId}` | any authenticated user |
+| `GET` | `/api/offers/request/{requestId}` | any authenticated user |
+| `PUT` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
+| `DELETE` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
+| `GET` | `/internal/offers/pending` | internal key |
+| `PATCH` | `/internal/offers/{offerId}/status` | internal key |
+
+Rules worth knowing:
+
+- **An offer may only target a request that exists** (R5). Submission calls
+  request-service's internal API first; an unknown request is a 404, and a request that
+  is `OFFER_APPROVED`, `CLOSED` or `CANCELLED` is a 409. `OFFER_PENDING` still accepts
+  offers — several sellers compete on the same demand until an admin picks one.
+- **A new offer is always `PENDING`** (R6). `status` is not a field on the create schema
+  at all, so a caller cannot start one anywhere else.
+- **Only a `PENDING` offer can be changed or decided.** Once approved, contact
+  permission may already have been granted against exactly the terms the admin saw, so
+  letting the seller rewrite the price afterwards would change what was approved. A
+  second decision on the same offer is a 409 rather than a silent overwrite.
+- **Cancelling is a status change, not a delete.** The record survives for the audit
+  history that Admin/Contact refers back to.
+- **A seller cannot see who they are bidding against.** Customers and admins get the
+  full offer; a rival seller gets `CompetingOfferOut`, which carries the price and
+  quantity but withholds `sellerId`. Sellers still need the competitive field to price
+  sensibly — they do not need the identity behind it.
+- **R7 is enforced upstream.** Admin/Contact authenticates the ADMIN and writes the
+  audit record, then relays the outcome through the internal `PATCH`, which accepts only
+  `APPROVED` or `REJECTED`. This service holds status, not authority.
+- **Identity is never accepted from the caller.** The token's `sub` is resolved to a
+  `sellerId` through seller-service; a body carrying `sellerId` or `status` is rejected
+  outright, not ignored.
+
 ## Running Locally
 
-The root compose file runs the whole system — four services and their four databases —
+The root compose file runs the whole system — five services and their five databases —
 on one network, with the shared secrets pinned in one place:
 
 ```bash
@@ -182,7 +242,8 @@ docker compose up --build
 ```
 
 The three Java services also compose independently (`cd auth-service && docker compose
-up --build`); request-service does not, since it only runs alongside customer-service.
+up --build`); request-service and offer-service do not, since each only runs alongside
+the services it resolves identities through.
 
 Copy `.env.example` to `.env` first when running a service on its own. `JWT_SECRET` and
 `INTERNAL_API_KEY` **must be identical across every service** — tokens are validated
@@ -212,6 +273,27 @@ Regenerate the data layer after changing any SQL under `internal/db/`:
 cd request-service && sqlc generate     # or: docker run --rm -v "$PWD":/src -w /src sqlc/sqlc generate
 ```
 
+The Python module uses [uv](https://docs.astral.sh/uv/), which manages its own pinned
+interpreter — no system Python or virtualenv setup required:
+
+```bash
+cd offer-service
+uv sync --all-groups            # create .venv from uv.lock
+uv run pytest                   # unit + integration; starts its own Postgres
+uv run ruff check . && uv run ruff format --check .
+uv run uvicorn app.main:app --port 8085 --reload
+
+DATABASE_URL=postgres://postgres:postgres@localhost:5436/offer_db \
+  uv run pytest                 # reuse a running Postgres instead of a container
+```
+
+After changing a SQLAlchemy model, write the matching migration — the model alone never
+alters the schema:
+
+```bash
+cd offer-service && uv run alembic revision --autogenerate -m "describe the change"
+```
+
 Heap is capped deliberately — `-Xmx768m` for surefire forks (root `pom.xml`) and for
 Maven itself (`.mvn/jvm.config`). Without those caps each JVM claims a quarter of
 physical RAM, which on an 8 GB machine gets the reactor OOM-killed while a Testcontainers
@@ -222,7 +304,7 @@ classes.
 
 - `docs/` — the full technical specification (business rules, service boundaries,
   interaction flows).
-- `postman/marketplace.postman_collection.json` — 54 requests covering every service,
+- `postman/marketplace.postman_collection.json` — 71 requests covering every service,
   the internal APIs, negative cases and health. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is
