@@ -1,7 +1,7 @@
 package com.marketplace.auth.config;
 
-import com.marketplace.auth.security.InternalApiKeyFilter;
-import com.marketplace.auth.security.JwtAuthenticationFilter;
+import com.marketplace.common.security.InternalApiKeyFilter;
+import com.marketplace.common.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

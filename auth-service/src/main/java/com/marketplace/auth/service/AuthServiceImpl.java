@@ -7,7 +7,7 @@ import com.marketplace.auth.dto.*;
 import com.marketplace.auth.exception.*;
 import com.marketplace.auth.mapper.UserMapper;
 import com.marketplace.auth.repository.UserRepository;
-import com.marketplace.auth.security.JwtUtil;
+import com.marketplace.common.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;

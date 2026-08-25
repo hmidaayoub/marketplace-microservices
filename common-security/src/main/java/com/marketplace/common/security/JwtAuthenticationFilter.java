@@ -1,4 +1,4 @@
-package com.marketplace.auth.security;
+package com.marketplace.common.security;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

@@ -7,7 +7,7 @@ import com.marketplace.auth.dto.*;
 import com.marketplace.auth.exception.*;
 import com.marketplace.auth.mapper.UserMapper;
 import com.marketplace.auth.repository.UserRepository;
-import com.marketplace.auth.security.JwtUtil;
+import com.marketplace.common.security.JwtUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
