@@ -1,14 +1,29 @@
+# Build context is the REPOSITORY ROOT, not this directory: the module needs the
+# parent pom and the common-security module, both of which live above it.
+#   docker build -f seller-service/Dockerfile .
+# The root docker-compose.yml does this for you.
 FROM maven:3.9.6-eclipse-temurin-21-alpine AS builder
-WORKDIR /app
+WORKDIR /build
+
+# Every module's pom is copied because the aggregator declares all of them and
+# refuses to load if any is missing - even though -pl below builds only what
+# this image needs. Poms first, so dependency resolution caches independently
+# of source changes.
 COPY pom.xml .
-RUN mvn dependency:go-offline -B
-COPY src ./src
-RUN mvn clean package -DskipTests -B
+COPY common-security/pom.xml common-security/
+COPY auth-service/pom.xml auth-service/
+COPY customer-service/pom.xml customer-service/
+COPY seller-service/pom.xml seller-service/
+RUN mvn -B -pl common-security,seller-service -am dependency:go-offline
+
+COPY common-security/src common-security/src
+COPY seller-service/src seller-service/src
+RUN mvn -B -pl common-security,seller-service -am clean package -DskipTests
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 RUN addgroup -S marketplace && adduser -S seller -G marketplace
-COPY --from=builder /app/target/seller-service-*.jar app.jar
+COPY --from=builder /build/seller-service/target/seller-service-*.jar app.jar
 RUN chown seller:marketplace app.jar
 USER seller
 EXPOSE 8083

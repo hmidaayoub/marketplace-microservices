@@ -1,0 +1,108 @@
+# Runs the whole system on one network. Services reach each other by service
+# name, so no host.docker.internal is needed.
+#
+#   docker compose up --build
+#
+# JWT_SECRET and INTERNAL_API_KEY are shared by every service by construction:
+# tokens are validated locally in each service, and the internal key is one
+# shared secret. Dev values only.
+
+x-secrets: &secrets
+  JWT_SECRET: dev-secret-key-change-in-production-min-256-bits
+  INTERNAL_API_KEY: dev-internal-api-key-change-in-production
+
+x-db-healthcheck: &db-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U postgres"]
+  interval: 5s
+  timeout: 5s
+  retries: 10
+
+services:
+  auth-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: user_auth_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes: [auth_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
+  customer-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: customer_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5433:5432"]
+    volumes: [customer_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
+  seller-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: seller_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5434:5432"]
+    volumes: [seller_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    ports: ["8081:8081"]
+    environment:
+      <<: *secrets
+      DB_HOST: auth-db
+      DB_NAME: user_auth_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      # seeds the ADMIN account; blank would skip seeding
+      ADMIN_PASSWORD: admin-dev-password
+    depends_on:
+      auth-db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  customer-service:
+    build:
+      context: .
+      dockerfile: customer-service/Dockerfile
+    ports: ["8082:8082"]
+    environment:
+      <<: *secrets
+      DB_HOST: customer-db
+      DB_NAME: customer_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      AUTH_SERVICE_URL: http://auth-service:8081
+    depends_on:
+      customer-db: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+
+  seller-service:
+    build:
+      context: .
+      dockerfile: seller-service/Dockerfile
+    ports: ["8083:8083"]
+    environment:
+      <<: *secrets
+      DB_HOST: seller-db
+      DB_NAME: seller_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      AUTH_SERVICE_URL: http://auth-service:8081
+    depends_on:
+      seller-db: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+
+volumes:
+  auth_db_data:
+  customer_db_data:
+  seller_db_data:
