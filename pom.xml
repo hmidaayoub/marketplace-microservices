@@ -33,6 +33,24 @@
         <spring-cloud.version>2023.0.0</spring-cloud.version>
     </properties>
 
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <!-- Without this each fork claims a 1944MB max heap (1/4 of an
+                             8GB box) while a Testcontainers Postgres is also resident,
+                             which SIGKILLs the reactor and intermittently breaks
+                             Mockito's bytecode instrumentation. See issue #27. -->
+                        <argLine>-Xmx768m -XX:MaxMetaspaceSize=256m</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
     <dependencyManagement>
         <dependencies>
             <dependency>

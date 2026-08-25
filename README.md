@@ -119,13 +119,16 @@ internal key is a single shared secret.
 ### Build and test
 
 ```bash
-mvn clean install -DskipTests   # all modules
+mvn test                        # all modules, ~60s
 mvn -pl auth-service test       # one module's tests
+mvn clean install -DskipTests   # build without testing
 ```
 
-Run integration suites **one module at a time**. Each spins up its own PostgreSQL
-container, and running all of them in a single reactor invocation exhausts memory on an
-8 GB machine.
+Heap is capped deliberately — `-Xmx768m` for surefire forks (root `pom.xml`) and for
+Maven itself (`.mvn/jvm.config`). Without those caps each JVM claims a quarter of
+physical RAM, which on an 8 GB machine gets the reactor OOM-killed while a Testcontainers
+PostgreSQL is resident. Each module starts one container per JVM, shared across its test
+classes.
 
 ## Documentation
 
