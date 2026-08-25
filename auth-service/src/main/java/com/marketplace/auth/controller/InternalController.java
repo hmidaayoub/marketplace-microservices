@@ -1,8 +1,8 @@
 package com.marketplace.auth.controller;
 
 import com.marketplace.auth.domain.User;
+import com.marketplace.auth.dto.InternalUserResponse;
 import com.marketplace.auth.dto.PhoneResponse;
-import com.marketplace.auth.dto.UserResponse;
 import com.marketplace.auth.mapper.UserMapper;
 import com.marketplace.auth.service.AuthService;
 import lombok.RequiredArgsConstructor;
@@ -20,9 +20,9 @@ public class InternalController {
     private final UserMapper userMapper;
 
     @GetMapping("/users/{userId}")
-    public ResponseEntity<UserResponse> getUserById(@PathVariable UUID userId) {
+    public ResponseEntity<InternalUserResponse> getUserById(@PathVariable UUID userId) {
         User user = authService.getUserByIdInternal(userId);
-        return ResponseEntity.ok(userMapper.toResponse(user));
+        return ResponseEntity.ok(userMapper.toInternalResponse(user));
     }
 
     @GetMapping("/users/{userId}/phone")

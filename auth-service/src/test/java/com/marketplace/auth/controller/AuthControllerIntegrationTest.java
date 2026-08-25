@@ -160,6 +160,29 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void internalGetUser_shouldNotExposePhoneNumber() throws Exception {
+        RegisterRequest reg = new RegisterRequest();
+        reg.setEmail("nophone@test.com");
+        reg.setPassword("password123");
+        reg.setPhoneNumber("+7777777777");
+
+        String response = mockMvc.perform(post("/api/auth/register/customer")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(reg)))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+
+        String userId = objectMapper.readTree(response).get("userId").asText();
+
+        mockMvc.perform(get("/internal/users/" + userId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.userId").exists())
+            .andExpect(jsonPath("$.email").value("nophone@test.com"))
+            .andExpect(jsonPath("$.role").value("CUSTOMER"))
+            .andExpect(jsonPath("$.phoneNumber").doesNotExist());
+    }
+
+    @Test
     void internalGetPhone_shouldReturnPhoneOnly() throws Exception {
         RegisterRequest reg = new RegisterRequest();
         reg.setEmail("phone@test.com");
