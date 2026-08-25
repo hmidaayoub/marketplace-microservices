@@ -56,6 +56,22 @@
     {
       "key": "adminAccessToken",
       "value": ""
+    },
+    {
+      "key": "requestUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "requestId",
+      "value": ""
+    },
+    {
+      "key": "customer2AccessToken",
+      "value": ""
+    },
+    {
+      "key": "runSuffix",
+      "value": ""
     }
   ],
   "item": [
@@ -73,23 +89,31 @@
               }
             ],
             "url": "{{authUrl}}/api/auth/register/customer",
-            "description": "409 if the email or phone is already taken.",
+            "description": "Registers a fresh customer on every run. The identity has to be unique because 'Update my account' later rewrites this user's email, and UpdateUserRequest exposes only email and phoneNumber - both unique keys - so a fixed identity makes the collection pass once against an empty database and fail on every re-run.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"customer1@test.com\",\n  \"password\": \"password123\",\n  \"phoneNumber\": \"+21611111111\"\n}"
+              "raw": "{\n  \"email\": \"customer{{runSuffix}}@test.com\",\n  \"password\": \"password123\",\n  \"phoneNumber\": \"+216{{runSuffix}}\"\n}"
             }
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One identity per run. Eight digits keeps +216xxxxxxxx inside the E.164 limit",
+                  "// that UpdateUserRequest's @Pattern enforces.",
+                  "pm.collectionVariables.set(\"runSuffix\", `${Date.now() % 100000000}`);"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"created or already exists\", () =>",
-                  "    pm.expect(pm.response.code).to.be.oneOf([201, 409]));",
-                  "if (pm.response.code === 201) {",
-                  "    pm.collectionVariables.set(\"userId\", pm.response.json().userId);",
-                  "}"
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"userId\", pm.response.json().userId);"
                 ]
               }
             }
@@ -108,7 +132,7 @@
             "url": "{{authUrl}}/api/auth/login",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"customer1@test.com\",\n  \"password\": \"password123\"\n}"
+              "raw": "{\n  \"email\": \"customer{{runSuffix}}@test.com\",\n  \"password\": \"password123\"\n}"
             }
           },
           "event": [
@@ -204,10 +228,10 @@
               }
             ],
             "url": "{{authUrl}}/api/users/me",
-            "description": "409 if the email belongs to someone else.",
+            "description": "Rewrites this run's customer email. This is why the identity above is generated per run rather than fixed.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"customer1.updated@test.com\"\n}"
+              "raw": "{\n  \"email\": \"customer{{runSuffix}}.updated@test.com\"\n}"
             }
           },
           "event": [
@@ -431,7 +455,8 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{sellerUrl}}/api/sellers/me"
+            "url": "{{sellerUrl}}/api/sellers/me",
+            "description": "Owner view: includes the address and userId that the public projection withholds."
           },
           "event": [
             {
@@ -441,7 +466,12 @@
                 "exec": [
                   "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"owner sees address\", () => pm.expect(pm.response.json()).to.have.property(\"address\"));",
-                  "pm.collectionVariables.set(\"sellerId\", pm.response.json().sellerId);"
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"sellerId\", b.sellerId);",
+                  "// Set here rather than only on a 201 from \"Register seller\": on a re-run that",
+                  "// request returns 409 and never runs its capture, which left sellerUserId empty",
+                  "// and made the internal resolve-by-user call below fail.",
+                  "pm.collectionVariables.set(\"sellerUserId\", b.userId);"
                 ]
               }
             }
@@ -504,7 +534,374 @@
       ]
     },
     {
-      "name": "5. Internal (service-to-service)",
+      "name": "5. Request",
+      "description": "Purchase requests and the demand behind them. Creating a request enrolls the creator as its first participant, so demand starts at one customer.",
+      "item": [
+        {
+          "name": "Create request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests",
+            "description": "The creator becomes participant #1, so totalCustomers is 1 and totalQuantity is their own quantity.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"itemName\": \"Espresso Machine\",\n  \"description\": \"bar grade\",\n  \"category\": \"kitchen\",\n  \"quantity\": 3\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"requestId\", b.requestId);",
+                  "pm.test(\"creator is enrolled as the first participant\", () => {",
+                  "    pm.expect(b.totalCustomers).to.eql(1);",
+                  "    pm.expect(b.totalQuantity).to.eql(3);",
+                  "});",
+                  "pm.test(\"opens in OPEN status\", () => pm.expect(b.status).to.eql(\"OPEN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register customer 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{authUrl}}/api/auth/register/customer",
+            "description": "A second customer, so joining and demand aggregation can be exercised. Its identity is fixed (and 409 on a re-run is fine) because nothing rewrites it, unlike customer 1. The phone must not collide with the seller's +21622222222 - phone numbers are unique across all accounts.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer2@test.com\",\n  \"password\": \"password123\",\n  \"phoneNumber\": \"+21633333333\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", () =>",
+                  "    pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login customer 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{authUrl}}/api/auth/login",
+            "description": "Captures customer 2's access token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer2@test.com\",\n  \"password\": \"password123\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"logged in\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"customer2AccessToken\", pm.response.json().accessToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create customer 2 profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{customerUrl}}/api/customers",
+            "description": "request-service resolves the token's userId to a customerId through customer-service, so the profile must exist before joining.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"firstName\": \"Second\",\n  \"lastName\": \"Customer\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created or already exists\", () =>",
+                  "    pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "description": "R2/R3: customer 2 joins with their own quantity. R4: the service recomputes the totals.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 5\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"joined\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"demand aggregates across both customers\", () => {",
+                  "    pm.expect(b.totalCustomers).to.eql(2);",
+                  "    pm.expect(b.totalQuantity).to.eql(8);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join request again (same customer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "description": "A customer takes part in a request at most once; the second attempt is a conflict.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 9\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected as a duplicate\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get request",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}",
+            "description": "Any authenticated user may read demand. Participant identity is never included here."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"carries the aggregated demand\", () => {",
+                  "    pm.expect(b.totalCustomers).to.eql(2);",
+                  "    pm.expect(b.totalQuantity).to.eql(8);",
+                  "});",
+                  "pm.test(\"never exposes who the participants are\", () => {",
+                  "    pm.expect(b).to.not.have.property(\"customerIds\");",
+                  "    pm.expect(b).to.not.have.property(\"participants\");",
+                  "});",
+                  "pm.test(\"never exposes a phone number\", () =>",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.not.include(\"phone\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List open requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests?status=OPEN&limit=20",
+            "description": "Browsing demand. A seller calls this to find a request worth an offer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"returns a list\", () => pm.expect(pm.response.json()).to.be.an(\"array\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Search requests by name",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests?q=espresso",
+            "description": "Case-insensitive match on the item name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"finds the request just created\", () =>",
+                  "    pm.expect(pm.response.json().length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My requests",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/me",
+            "description": "Every request the calling customer takes part in, created or joined."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"includes the created request\", () => {",
+                  "    const ids = pm.response.json().map(r => r.requestId);",
+                  "    pm.expect(ids).to.include(pm.collectionVariables.get(\"requestId\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Change my quantity",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants/me",
+            "description": "A customer changes only their own line; the totals are recomputed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 10\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"totals follow the change\", () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.totalCustomers).to.eql(2);",
+                  "    pm.expect(b.totalQuantity).to.eql(15);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Internal (service-to-service)",
       "item": [
         {
           "name": "Get user identity",
@@ -604,11 +1001,97 @@
               }
             }
           ]
+        },
+        {
+          "name": "Internal: get request",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}",
+            "description": "Lets another service confirm a request exists before acting on it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"is the request created earlier\", () =>",
+                  "    pm.expect(pm.response.json().requestId).to.eql(pm.collectionVariables.get(\"requestId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: request demand",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}/demand",
+            "description": "Totals only. This is what Offer Service reads to price against the aggregated demand."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"reports the current totals\", () => {",
+                  "    pm.expect(b.totalCustomers).to.eql(2);",
+                  "    pm.expect(b.totalQuantity).to.eql(15);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: request participants",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}/participants",
+            "description": "The one route that exposes customerIds - Admin/Contact uses it to grant ContactAccess. It must never be routed by the public gateway."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const ids = pm.response.json().customerIds;",
+                  "pm.test(\"lists both participants\", () => pm.expect(ids).to.have.lengthOf(2));",
+                  "pm.test(\"returns customerIds, never phone numbers\", () =>",
+                  "    pm.expect(pm.response.text().toLowerCase()).to.not.include(\"phone\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "6. Negative cases",
+      "name": "7. Negative cases",
       "item": [
         {
           "name": "No credentials -> 401",
@@ -782,11 +1265,200 @@
               }
             }
           ]
+        },
+        {
+          "name": "Request without a token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{requestUrl}}/api/requests",
+            "description": "Public request endpoints require a bearer token."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Seller creates a request -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests",
+            "description": "A seller browses demand but must not manufacture it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"itemName\": \"Seller Item\",\n  \"quantity\": 1\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal request endpoint without the key -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}",
+            "description": "The internal filter fails closed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal request endpoint with a user JWT -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}",
+            "description": "A user token is not an internal credential; the two call styles are separate."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed requestId -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/not-a-uuid",
+            "description": "A malformed path variable is a client error, not a 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join a request that does not exist -> 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/11111111-1111-1111-1111-111111111111/participants",
+            "description": "An unknown requestId is a 404.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 1\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not found\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join with a non-positive quantity -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "description": "Quantity must be greater than zero.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 0\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "7. Health",
+      "name": "8. Health",
       "item": [
         {
           "name": "Auth health",
@@ -864,12 +1536,58 @@
               }
             }
           ]
+        },
+        {
+          "name": "Request service health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{requestUrl}}/actuator/health",
+            "description": "request-service serves /actuator/health as well as /health, so probes are configured identically across the platform."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"up\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"reports UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "8. Session teardown",
+      "name": "9. Session teardown",
       "item": [
+        {
+          "name": "Leave request",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants/me",
+            "description": "Runs before logout: it needs a live token, and it must run after the internal checks that expect two participants."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"no content\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
         {
           "name": "Refresh token",
           "request": {
@@ -890,10 +1608,15 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "// Read the previous token BEFORE overwriting it: the assertion used to run",
+                  "// after the set() below, so it compared the new token against itself and",
+                  "// could never pass.",
+                  "const previousRefreshToken = pm.collectionVariables.get(\"refreshToken\");",
                   "const b = pm.response.json();",
+                  "pm.test(\"token was rotated\", () =>",
+                  "    pm.expect(b.refreshToken).to.not.eql(previousRefreshToken));",
                   "pm.collectionVariables.set(\"accessToken\", b.accessToken);",
-                  "pm.collectionVariables.set(\"refreshToken\", b.refreshToken);",
-                  "pm.test(\"token was rotated\", () => pm.expect(pm.response.json().refreshToken).to.not.eql(pm.collectionVariables.get(\"refreshToken\")));"
+                  "pm.collectionVariables.set(\"refreshToken\", b.refreshToken);"
                 ]
               }
             }

@@ -48,6 +48,16 @@ services:
     volumes: [seller_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
+  request-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: request_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5435:5432"]
+    volumes: [request_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
   auth-service:
     build:
       context: .
@@ -102,7 +112,32 @@ services:
       seller-db: {condition: service_healthy}
       auth-service: {condition: service_healthy}
 
+  # The only Go service. It reaches customer-service to turn the token's userId into
+  # the customerId that participation records, so it waits for that to be healthy.
+  request-service:
+    build:
+      context: .
+      dockerfile: request-service/Dockerfile
+    ports: ["8084:8084"]
+    environment:
+      <<: *secrets
+      DB_HOST: request-db
+      DB_NAME: request_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      CUSTOMER_SERVICE_URL: http://customer-service:8082
+    depends_on:
+      request-db: {condition: service_healthy}
+      customer-service: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
 volumes:
   auth_db_data:
   customer_db_data:
   seller_db_data:
+  request_db_data:
