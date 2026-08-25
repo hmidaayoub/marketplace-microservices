@@ -31,7 +31,10 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
 
     @BeforeEach
     void cleanUp() {
-        userRepository.deleteAll();
+        // keep the bootstrap ADMIN: it is seeded once at startup, not per test
+        userRepository.deleteAll(userRepository.findAll().stream()
+                .filter(u -> u.getRole() != com.marketplace.auth.domain.Role.ADMIN)
+                .toList());
     }
 
     @Test
@@ -407,6 +410,30 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
             .andExpect(jsonPath("$.errors.email").exists())
             .andExpect(jsonPath("$.errors.password").exists())
             .andExpect(jsonPath("$.errors.phoneNumber").exists());
+    }
+
+    @Test
+    void adminBootstrap_shouldCreateAnAdminAccount_onStartup() throws Exception {
+        // seeded by AdminBootstrap from admin.bootstrap.* config
+        var admin = userRepository.findByEmail("admin@marketplace.local");
+        assertThat(admin).isPresent();
+        assertThat(admin.get().getRole()).isEqualTo(com.marketplace.auth.domain.Role.ADMIN);
+    }
+
+    @Test
+    void adminBootstrap_shouldProduceAnAdminRoleClaim_onLogin() throws Exception {
+        LoginRequest login = new LoginRequest();
+        login.setEmail("admin@marketplace.local");
+        login.setPassword("bootstrap-admin-password");
+
+        String response = mockMvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(login)))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+
+        String accessToken = objectMapper.readTree(response).get("accessToken").asText();
+        assertThat(jwtUtil.extractRole(accessToken)).isEqualTo("ADMIN");
     }
 
     private String loginAndGet(String email, String field) throws Exception {

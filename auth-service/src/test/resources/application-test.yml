@@ -16,3 +16,10 @@ jwt:
   secret: test-secret-key-for-unit-tests-only-256-bits-long
   expiry-minutes: 15
   refresh-expiry-days: 7
+
+admin:
+  bootstrap:
+    enabled: true
+    email: ${ADMIN_EMAIL:admin@marketplace.local}
+    phone: ${ADMIN_PHONE:+10000000000}
+    password: bootstrap-admin-password

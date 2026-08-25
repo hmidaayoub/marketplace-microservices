@@ -44,3 +44,10 @@ management:
     health:
       probes:
         enabled: true
+
+admin:
+  bootstrap:
+    enabled: true
+    email: ${ADMIN_EMAIL:admin@marketplace.local}
+    phone: ${ADMIN_PHONE:+10000000000}
+    password: ${ADMIN_PASSWORD:}
