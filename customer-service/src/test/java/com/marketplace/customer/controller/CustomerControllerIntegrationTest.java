@@ -2,6 +2,7 @@ package com.marketplace.customer.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.client.WireMock;
+import com.marketplace.common.security.JwtUtil;
 import com.marketplace.customer.AbstractIntegrationTest;
 import com.marketplace.customer.dto.CustomerRequest;
 import com.marketplace.customer.dto.UpdateCustomerRequest;
@@ -9,6 +10,7 @@ import com.marketplace.customer.repository.CustomerRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,13 +27,18 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired CustomerRepository customerRepository;
+    @Autowired JwtUtil jwtUtil;
+
+    @Value("${internal.api.key}") String internalApiKey;
 
     private UUID userId;
+    private String bearerToken;
 
     @BeforeEach
     void setUp() {
         customerRepository.deleteAll();
         userId = UUID.fromString("550e8400-e29b-41d4-a716-446655440000");
+        bearerToken = "Bearer " + jwtUtil.generateAccessToken(userId, "test@example.com", "CUSTOMER");
         
         // Mock auth service to return 200 for this user
         WireMock.stubFor(WireMock.get(WireMock.urlEqualTo("/internal/users/" + userId))
@@ -49,7 +56,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
         request.setLastName("Smith");
 
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
             .andExpect(status().isCreated())
@@ -67,14 +74,14 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
 
         // First create
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
             .andExpect(status().isCreated());
 
         // Second create should fail
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
             .andExpect(status().isConflict());
@@ -89,13 +96,13 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
         request.setLastName("Jones");
 
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
             .andReturn().getResponse().getContentAsString();
 
         mockMvc.perform(get("/api/customers/me")
-                .header("X-User-Id", userId.toString()))
+                .header("Authorization", bearerToken))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.firstName").value("Bob"))
             .andExpect(jsonPath("$.lastName").value("Jones"));
@@ -110,7 +117,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
         create.setLastName("Brown");
 
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(create)));
 
@@ -119,7 +126,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
         update.setFirstName("Charles");
 
         mockMvc.perform(put("/api/customers/me")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(update)))
             .andExpect(status().isOk())
@@ -135,13 +142,46 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
         request.setLastName("Wilson");
 
         mockMvc.perform(post("/api/customers")
-                .header("X-User-Id", userId.toString())
+                .header("Authorization", bearerToken)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)))
             .andReturn().getResponse().getContentAsString();
 
-        mockMvc.perform(get("/internal/customers/by-user/" + userId))
+        mockMvc.perform(get("/internal/customers/by-user/" + userId)
+                .header("X-Internal-Api-Key", internalApiKey))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.firstName").value("Dave"));
+    }
+
+    @Test
+    void getMyProfile_shouldReturn401_whenNoCredentials() throws Exception {
+        mockMvc.perform(get("/api/customers/me"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @Transactional
+    void getMyProfile_shouldReturn401_whenOnlySpoofedUserIdHeader() throws Exception {
+        CustomerRequest request = new CustomerRequest();
+        request.setFirstName("Erin");
+        request.setLastName("Hall");
+
+        mockMvc.perform(post("/api/customers")
+                .header("Authorization", bearerToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isCreated());
+
+        // Erin's profile now exists, so before the fix this returned 200 with her
+        // data. X-User-Id is caller-controlled and must not prove identity.
+        mockMvc.perform(get("/api/customers/me")
+                .header("X-User-Id", userId.toString()))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void internalGetCustomer_shouldReturn401_whenApiKeyMissing() throws Exception {
+        mockMvc.perform(get("/internal/customers/by-user/" + userId))
+            .andExpect(status().isUnauthorized());
     }
 }
