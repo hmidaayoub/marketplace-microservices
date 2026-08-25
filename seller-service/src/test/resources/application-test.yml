@@ -7,3 +7,10 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+jwt:
+  secret: test-secret-key-for-unit-tests-only-256-bits-long
+
+internal:
+  api:
+    key: test-internal-api-key

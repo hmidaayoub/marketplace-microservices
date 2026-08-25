@@ -20,13 +20,13 @@ public class SellerService {
     private final SellerRepository sellerRepository;
 
     @Transactional
-    public SellerResponse createSeller(SellerCreateRequest request) {
-        if (sellerRepository.existsByUserId(request.userId())) {
+    public SellerResponse createSeller(UUID userId, SellerCreateRequest request) {
+        if (sellerRepository.existsByUserId(userId)) {
             throw new SellerAlreadyExistsException("Seller profile already exists for this user");
         }
 
         Seller seller = Seller.builder()
-                .userId(request.userId())
+                .userId(userId)
                 .storeName(request.storeName())
                 .description(request.description())
                 .city(request.city())

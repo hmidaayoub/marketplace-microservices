@@ -15,10 +15,13 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(SellerController.class)
+@WebMvcTest(controllers = SellerController.class,
+    excludeAutoConfiguration = org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration.class)
+@org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc(addFilters = false)
 class SellerControllerTest {
 
     @Autowired
@@ -30,33 +33,7 @@ class SellerControllerTest {
     @MockBean
     private SellerService sellerService;
 
-    @Test
-    void shouldCreateSeller() throws Exception {
-        UUID userId = UUID.randomUUID();
-        var request = new SellerCreateRequest(userId, "Store", "Desc", "City", "Addr");
-        var response = new SellerResponse(UUID.randomUUID(), userId, "Store", "Desc", "City", "Addr", 0.0, null, null);
 
-        when(sellerService.createSeller(any())).thenReturn(response);
-
-        mockMvc.perform(post("/api/sellers")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.storeName").value("Store"));
-    }
-
-    @Test
-    void shouldGetMyProfile() throws Exception {
-        UUID userId = UUID.randomUUID();
-        var response = new SellerResponse(UUID.randomUUID(), userId, "MyStore", "Desc", "City", "Addr", 0.0, null, null);
-
-        when(sellerService.getSellerByUserId(userId)).thenReturn(response);
-
-        mockMvc.perform(get("/api/sellers/me")
-                .header("X-User-Id", userId.toString()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.userId").value(userId.toString()));
-    }
 
     @Test
     void shouldGetPublicProfile() throws Exception {

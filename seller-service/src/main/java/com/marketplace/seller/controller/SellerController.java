@@ -8,6 +8,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
@@ -20,20 +21,23 @@ public class SellerController {
     private final SellerService sellerService;
 
     @PostMapping
-    public ResponseEntity<SellerResponse> createSeller(@Valid @RequestBody SellerCreateRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(sellerService.createSeller(request));
+    public ResponseEntity<SellerResponse> createSeller(
+            @AuthenticationPrincipal String userId,
+            @Valid @RequestBody SellerCreateRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(sellerService.createSeller(UUID.fromString(userId), request));
     }
 
     @GetMapping("/me")
-    public ResponseEntity<SellerResponse> getMyProfile(@RequestHeader("X-User-Id") UUID userId) {
-        return ResponseEntity.ok(sellerService.getSellerByUserId(userId));
+    public ResponseEntity<SellerResponse> getMyProfile(@AuthenticationPrincipal String userIdRaw) {
+        return ResponseEntity.ok(sellerService.getSellerByUserId(UUID.fromString(userIdRaw)));
     }
 
     @PutMapping("/me")
     public ResponseEntity<SellerResponse> updateMyProfile(
-            @RequestHeader("X-User-Id") UUID userId,
+            @AuthenticationPrincipal String userIdRaw,
             @RequestBody SellerUpdateRequest request) {
-        return ResponseEntity.ok(sellerService.updateSeller(userId, request));
+        return ResponseEntity.ok(sellerService.updateSeller(UUID.fromString(userIdRaw), request));
     }
 
     @GetMapping("/{sellerId}")

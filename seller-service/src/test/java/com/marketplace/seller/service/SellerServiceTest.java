@@ -54,7 +54,7 @@ class SellerServiceTest {
 
     @Test
     void shouldCreateSellerProfile() {
-        var request = new SellerCreateRequest(userId, "TechStore", "Gadgets", "Berlin", "Alexanderplatz 1");
+        var request = new SellerCreateRequest("TechStore", "Gadgets", "Berlin", "Alexanderplatz 1");
 
         when(sellerRepository.existsByUserId(userId)).thenReturn(false);
         when(sellerRepository.save(any(Seller.class))).thenAnswer(i -> {
@@ -63,7 +63,7 @@ class SellerServiceTest {
             return s;
         });
 
-        SellerResponse response = sellerService.createSeller(request);
+        SellerResponse response = sellerService.createSeller(userId, request);
 
         assertThat(response.storeName()).isEqualTo("TechStore");
         assertThat(response.userId()).isEqualTo(userId);
@@ -72,10 +72,10 @@ class SellerServiceTest {
 
     @Test
     void shouldRejectDuplicateUserId() {
-        var request = new SellerCreateRequest(userId, "Store", "Desc", "City", "Addr");
+        var request = new SellerCreateRequest("Store", "Desc", "City", "Addr");
         when(sellerRepository.existsByUserId(userId)).thenReturn(true);
 
-        assertThatThrownBy(() -> sellerService.createSeller(request))
+        assertThatThrownBy(() -> sellerService.createSeller(userId, request))
                 .isInstanceOf(SellerAlreadyExistsException.class)
                 .hasMessageContaining("already exists");
     }

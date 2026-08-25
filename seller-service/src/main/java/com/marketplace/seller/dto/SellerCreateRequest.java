@@ -1,11 +1,12 @@
 package com.marketplace.seller.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import java.util.UUID;
 
+/**
+ * userId is deliberately absent: it comes from the authenticated JWT subject.
+ * Accepting it in the body let any caller create a profile for another user.
+ */
 public record SellerCreateRequest(
-    @NotNull UUID userId,
     @NotBlank String storeName,
     String description,
     String city,

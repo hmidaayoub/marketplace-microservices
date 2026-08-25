@@ -29,6 +29,8 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - AUTH_SERVICE_URL=http://host.docker.internal:8081
+      - JWT_SECRET=dev-secret-key-change-in-production-min-256-bits
+      - INTERNAL_API_KEY=dev-internal-api-key-change-in-production
     depends_on:
       seller-db:
         condition: service_healthy

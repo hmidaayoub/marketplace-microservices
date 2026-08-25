@@ -1,16 +1,20 @@
 package com.marketplace.seller.controller;
 
+import com.marketplace.common.security.JwtUtil;
 import com.marketplace.seller.AbstractIntegrationTest;
 import com.marketplace.seller.domain.Seller;
 import com.marketplace.seller.repository.SellerRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -18,9 +22,13 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired SellerRepository sellerRepository;
+    @Autowired JwtUtil jwtUtil;
+
+    @Value("${internal.api.key}") String internalApiKey;
 
     private UUID userId;
     private UUID sellerId;
+    private String bearerToken;
 
     @BeforeEach
     void setUp() {
@@ -35,6 +43,67 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
                 .rating(0.0)
                 .build());
         sellerId = seller.getSellerId();
+        bearerToken = "Bearer " + jwtUtil.generateAccessToken(userId, "seller@test.com", "SELLER");
+    }
+
+    @Test
+    void myProfile_shouldReturn401_whenNoCredentials() throws Exception {
+        mockMvc.perform(get("/api/sellers/me"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void myProfile_shouldReturn401_whenOnlySpoofedUserIdHeader() throws Exception {
+        // The seller exists, so before the fix this returned 200 with their data.
+        mockMvc.perform(get("/api/sellers/me")
+                .header("X-User-Id", userId.toString()))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void createSeller_shouldReturn401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(post("/api/sellers")
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{\"userId\":\"" + UUID.randomUUID() + "\",\"storeName\":\"Spoofed\"}"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void internalGetSeller_shouldReturn401_whenApiKeyMissing() throws Exception {
+        mockMvc.perform(get("/internal/sellers/by-user/" + userId))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void myProfile_shouldReturnSeller_whenAuthenticated() throws Exception {
+        mockMvc.perform(get("/api/sellers/me")
+                .header("Authorization", bearerToken))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.storeName").value("Testcontainers Store"));
+    }
+
+    @Test
+    void internalGetSeller_shouldReturnSeller_whenApiKeyPresent() throws Exception {
+        mockMvc.perform(get("/internal/sellers/by-user/" + userId)
+                .header("X-Internal-Api-Key", internalApiKey))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.storeName").value("Testcontainers Store"));
+    }
+
+    @Test
+    void createSeller_shouldUseTokenIdentity_andIgnoreSpoofedBodyUserId() throws Exception {
+        UUID authenticatedUser = UUID.randomUUID();
+        UUID spoofedUser = UUID.randomUUID();
+        String token = "Bearer " + jwtUtil.generateAccessToken(authenticatedUser, "new@test.com", "SELLER");
+
+        mockMvc.perform(post("/api/sellers")
+                .header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"userId\":\"" + spoofedUser + "\",\"storeName\":\"New Store\"}"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.storeName").value("New Store"))
+            // the profile belongs to the token subject, not the id in the body
+            .andExpect(jsonPath("$.userId").value(authenticatedUser.toString()));
     }
 
     @Test
