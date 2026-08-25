@@ -21,6 +21,10 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
 
+internal:
+  api:
+    key: ${INTERNAL_API_KEY:dev-internal-api-key-change-in-production}
+
 auth:
   service:
     url: ${AUTH_SERVICE_URL:http://localhost:8081}

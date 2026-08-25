@@ -29,6 +29,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - JWT_SECRET=dev-secret-key-change-in-production-min-256-bits
+      - INTERNAL_API_KEY=dev-internal-api-key-change-in-production
       - JWT_EXPIRY=60
     depends_on:
       auth-db:

@@ -29,6 +29,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - AUTH_SERVICE_URL=http://host.docker.internal:8081
+      - INTERNAL_API_KEY=dev-internal-api-key-change-in-production
     depends_on:
       customer-db:
         condition: service_healthy

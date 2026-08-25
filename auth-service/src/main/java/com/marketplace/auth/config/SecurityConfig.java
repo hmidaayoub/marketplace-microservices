@@ -1,5 +1,6 @@
 package com.marketplace.auth.config;
 
+import com.marketplace.auth.security.InternalApiKeyFilter;
 import com.marketplace.auth.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -20,6 +21,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final InternalApiKeyFilter internalApiKeyFilter;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -34,9 +36,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/auth/refresh").permitAll()
                 
-                // Internal routes - accessible within the cluster/network
-                // The API Gateway blocks /internal from public access per spec Section 6
-                .requestMatchers("/internal/**").permitAll()
+                // Internal routes - authorized backend services only per spec Section 6.
+                // InternalApiKeyFilter grants INTERNAL on a valid X-Internal-Api-Key.
+                .requestMatchers("/internal/**").hasAuthority("INTERNAL")
                 
                 // Authenticated routes
                 .requestMatchers("/api/users/me").authenticated()
@@ -47,7 +49,8 @@ public class SecurityConfig {
                 
                 .anyRequest().authenticated()
             )
-            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(internalApiKeyFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }
