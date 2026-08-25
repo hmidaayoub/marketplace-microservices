@@ -50,4 +50,12 @@ class JwtUtilTest {
         assertThat(jwtUtil.isRefreshToken(
                 jwtUtil.generateAccessToken(userId, "a@b.com", "CUSTOMER"))).isFalse();
     }
+
+    @Test
+    void generateRefreshToken_shouldBeUnique_forRepeatedCallsInTheSameSecond() {
+        UUID userId = UUID.randomUUID();
+        assertThat(jwtUtil.generateRefreshToken(userId))
+                .isNotEqualTo(jwtUtil.generateRefreshToken(userId));
+    }
+
 }

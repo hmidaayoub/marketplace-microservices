@@ -23,6 +23,7 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired UserRepository userRepository;
+    @Autowired com.marketplace.common.security.JwtUtil jwtUtil;
 
     @Value("${internal.api.key}") String internalApiKey;
 
@@ -256,6 +257,56 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(get("/actuator/health"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
+    void refresh_shouldReturn401_afterLogout() throws Exception {
+        registerCustomerAndGetUserId("logout@test.com", "+9999999992");
+
+        LoginRequest login = new LoginRequest();
+        login.setEmail("logout@test.com");
+        login.setPassword("password123");
+
+        String loginResponse = mockMvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(login)))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+
+        String accessToken = objectMapper.readTree(loginResponse).get("accessToken").asText();
+        String refreshToken = objectMapper.readTree(loginResponse).get("refreshToken").asText();
+
+        mockMvc.perform(post("/api/auth/logout")
+                .header("Authorization", "Bearer " + accessToken))
+            .andExpect(status().isNoContent());
+
+        // the refresh token must not outlive the session it belonged to
+        mockMvc.perform(post("/api/auth/refresh")
+                .header("X-Refresh-Token", refreshToken))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void refresh_shouldReturn401_whenTokenIsNotOnRecord() throws Exception {
+        registerCustomerAndGetUserId("unknown@test.com", "+9999999993");
+
+        LoginRequest login = new LoginRequest();
+        login.setEmail("unknown@test.com");
+        login.setPassword("password123");
+
+        String loginResponse = mockMvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(login)))
+            .andReturn().getResponse().getContentAsString();
+        String userId = objectMapper.readTree(loginResponse).get("accessToken").asText();
+
+        // a well-formed, correctly signed token the server never issued
+        String forged = jwtUtil.generateRefreshToken(
+                java.util.UUID.fromString(jwtUtil.extractUserId(userId).toString()));
+
+        mockMvc.perform(post("/api/auth/refresh")
+                .header("X-Refresh-Token", forged))
+            .andExpect(status().isUnauthorized());
     }
 
     private String registerCustomerAndGetUserId(String email, String phoneNumber) throws Exception {

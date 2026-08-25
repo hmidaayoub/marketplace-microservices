@@ -6,6 +6,8 @@ import com.marketplace.auth.domain.UserStatus;
 import com.marketplace.auth.dto.*;
 import com.marketplace.auth.exception.*;
 import com.marketplace.auth.mapper.UserMapper;
+import com.marketplace.auth.domain.RefreshToken;
+import com.marketplace.auth.repository.RefreshTokenRepository;
 import com.marketplace.auth.repository.UserRepository;
 import com.marketplace.common.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
@@ -14,6 +16,11 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
+import java.util.HexFormat;
 import java.util.UUID;
 
 @Slf4j
@@ -23,6 +30,7 @@ import java.util.UUID;
 public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final UserMapper userMapper;
@@ -59,7 +67,6 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    @Transactional(readOnly = true)
     public TokenResponse login(LoginRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(InvalidCredentialsException::new);
@@ -75,6 +82,7 @@ public class AuthServiceImpl implements AuthService {
         String accessToken = jwtUtil.generateAccessToken(
                 user.getUserId(), user.getEmail(), user.getRole().name());
         String refreshToken = jwtUtil.generateRefreshToken(user.getUserId());
+        recordRefreshToken(user.getUserId(), refreshToken);
 
         log.info("User logged in: userId={}", user.getUserId());
         return TokenResponse.builder()
@@ -91,6 +99,13 @@ public class AuthServiceImpl implements AuthService {
             throw new UnauthorizedException("Invalid refresh token");
         }
 
+        RefreshToken stored = refreshTokenRepository.findByTokenHash(hash(refreshToken))
+                .orElseThrow(() -> new UnauthorizedException("Refresh token is not recognised"));
+
+        if (!stored.isUsable()) {
+            throw new UnauthorizedException("Refresh token has been revoked or expired");
+        }
+
         UUID userId = jwtUtil.extractUserId(refreshToken);
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException("User not found"));
@@ -103,6 +118,11 @@ public class AuthServiceImpl implements AuthService {
                 user.getUserId(), user.getEmail(), user.getRole().name());
         String newRefreshToken = jwtUtil.generateRefreshToken(user.getUserId());
 
+        // rotate: the presented token cannot be replayed once exchanged
+        stored.setRevoked(true);
+        refreshTokenRepository.save(stored);
+        recordRefreshToken(user.getUserId(), newRefreshToken);
+
         return TokenResponse.builder()
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
@@ -112,10 +132,28 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    public void logout(String token) {
-        // In a real system, add token to a blacklist (Redis)
-        // For MVP, client-side token deletion is sufficient per spec
-        log.info("Logout requested for token");
+    public void logout(UUID userId) {
+        int revoked = refreshTokenRepository.revokeAllForUser(userId);
+        log.info("Logout: revoked {} refresh token(s) for userId={}", revoked, userId);
+    }
+
+    private void recordRefreshToken(UUID userId, String refreshToken) {
+        refreshTokenRepository.save(RefreshToken.builder()
+                .userId(userId)
+                .tokenHash(hash(refreshToken))
+                .expiresAt(LocalDateTime.now().plusDays(jwtUtil.getRefreshExpiryDays()))
+                .revoked(false)
+                .build());
+    }
+
+    /** Tokens are stored hashed so a database leak yields no usable sessions. */
+    private String hash(String token) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     @Override

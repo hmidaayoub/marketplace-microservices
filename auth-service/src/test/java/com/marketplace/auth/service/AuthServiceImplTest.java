@@ -27,6 +27,7 @@ import static org.mockito.Mockito.*;
 class AuthServiceImplTest {
 
     @Mock UserRepository userRepository;
+    @Mock com.marketplace.auth.repository.RefreshTokenRepository refreshTokenRepository;
     @Mock PasswordEncoder passwordEncoder;
     @Mock JwtUtil jwtUtil;
     @Mock UserMapper userMapper;

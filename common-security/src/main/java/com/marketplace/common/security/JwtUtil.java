@@ -35,6 +35,10 @@ public class JwtUtil {
         return expiryMinutes * 60;
     }
 
+    public long getRefreshExpiryDays() {
+        return refreshExpiryDays;
+    }
+
     public String generateAccessToken(UUID userId, String email, String role) {
         Instant now = Instant.now();
         Instant expiry = now.plus(expiryMinutes, ChronoUnit.MINUTES);
@@ -55,6 +59,9 @@ public class JwtUtil {
 
         return Jwts.builder()
                 .subject(userId.toString())
+                // unique id: without it two refresh tokens issued to the same user
+                // in the same second are byte-identical
+                .id(UUID.randomUUID().toString())
                 .claim("type", "refresh")
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))

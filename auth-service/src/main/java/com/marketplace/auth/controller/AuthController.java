@@ -36,9 +36,9 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@RequestHeader("Authorization") String authHeader) {
-        String token = authHeader.replace("Bearer ", "");
-        authService.logout(token);
+    public ResponseEntity<Void> logout(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal String userId) {
+        authService.logout(java.util.UUID.fromString(userId));
         return ResponseEntity.noContent().build();
     }
 }

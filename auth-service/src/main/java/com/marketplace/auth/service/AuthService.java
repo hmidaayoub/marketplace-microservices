@@ -11,7 +11,7 @@ public interface AuthService {
     UserResponse registerSeller(RegisterRequest request);
     TokenResponse login(LoginRequest request);
     TokenResponse refreshToken(String refreshToken);
-    void logout(String token);
+    void logout(UUID userId);
     UserResponse getCurrentUser(UUID userId);
     UserResponse updateCurrentUser(UUID userId, UpdateUserRequest request);
     User getUserByIdInternal(UUID userId);
