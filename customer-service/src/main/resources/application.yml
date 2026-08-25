@@ -35,3 +35,13 @@ auth:
 logging:
   level:
     com.marketplace.customer: DEBUG
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true

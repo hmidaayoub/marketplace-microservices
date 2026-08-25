@@ -14,5 +14,5 @@ internal:
 
 jwt:
   secret: test-secret-key-for-unit-tests-only-256-bits-long
-  expiry-minutes: 60
+  expiry-minutes: 15
   refresh-expiry-days: 7

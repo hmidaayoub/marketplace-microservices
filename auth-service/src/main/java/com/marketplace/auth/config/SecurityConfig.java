@@ -30,6 +30,10 @@ public class SecurityConfig {
             .sessionManagement(session -> 
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // Liveness/readiness probes must be reachable unauthenticated;
+                // metrics (incl. prometheus) stay behind the internal API key.
+                .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+                .requestMatchers("/actuator/**").hasAuthority("INTERNAL")
                 // Public routes (no auth required)
                 .requestMatchers(HttpMethod.POST, "/api/auth/register/customer").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/auth/register/seller").permitAll()

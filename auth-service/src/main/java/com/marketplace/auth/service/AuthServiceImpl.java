@@ -80,7 +80,7 @@ public class AuthServiceImpl implements AuthService {
         return TokenResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(3600)
+                .expiresIn(jwtUtil.getAccessTokenExpirySeconds())
                 .tokenType("Bearer")
                 .build();
     }
@@ -106,7 +106,7 @@ public class AuthServiceImpl implements AuthService {
         return TokenResponse.builder()
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
-                .expiresIn(3600)
+                .expiresIn(jwtUtil.getAccessTokenExpirySeconds())
                 .tokenType("Bearer")
                 .build();
     }

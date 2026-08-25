@@ -235,6 +235,29 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
             .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void login_shouldReportExpiresIn_matchingConfiguredExpiry() throws Exception {
+        registerCustomerAndGetUserId("expiry@test.com", "+9999999991");
+
+        LoginRequest login = new LoginRequest();
+        login.setEmail("expiry@test.com");
+        login.setPassword("password123");
+
+        // application-test.yml sets jwt.expiry-minutes: 15
+        mockMvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(login)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.expiresIn").value(900));
+    }
+
+    @Test
+    void actuatorHealth_shouldBeReachableWithoutCredentials() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("UP"));
+    }
+
     private String registerCustomerAndGetUserId(String email, String phoneNumber) throws Exception {
         RegisterRequest reg = new RegisterRequest();
         reg.setEmail(email);

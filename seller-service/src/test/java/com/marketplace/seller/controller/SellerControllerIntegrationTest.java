@@ -112,4 +112,11 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.storeName").value("Testcontainers Store"));
     }
+
+    @Test
+    void actuatorHealth_shouldBeReachableWithoutCredentials() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("UP"));
+    }
 }

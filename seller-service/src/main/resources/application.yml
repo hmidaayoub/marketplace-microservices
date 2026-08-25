@@ -22,3 +22,13 @@ jwt:
 internal:
   api:
     key: ${INTERNAL_API_KEY:dev-internal-api-key-change-in-production}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true

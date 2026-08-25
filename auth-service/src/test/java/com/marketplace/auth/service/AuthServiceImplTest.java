@@ -103,6 +103,7 @@ class AuthServiceImplTest {
         when(passwordEncoder.matches(anyString(), anyString())).thenReturn(true);
         when(jwtUtil.generateAccessToken(any(), anyString(), anyString())).thenReturn("access_token");
         when(jwtUtil.generateRefreshToken(any())).thenReturn("refresh_token");
+        when(jwtUtil.getAccessTokenExpirySeconds()).thenReturn(3600L);
 
         TokenResponse response = authService.login(loginRequest);
 

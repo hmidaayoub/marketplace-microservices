@@ -29,6 +29,10 @@ public class SecurityConfig {
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // Liveness/readiness probes must be reachable unauthenticated;
+                // metrics (incl. prometheus) stay behind the internal API key.
+                .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+                .requestMatchers("/actuator/**").hasAuthority("INTERNAL")
                 // Authorized backend services only, per spec section 6
                 .requestMatchers("/internal/**").hasAuthority("INTERNAL")
                 .anyRequest().authenticated()

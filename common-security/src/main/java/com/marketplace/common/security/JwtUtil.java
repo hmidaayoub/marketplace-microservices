@@ -30,6 +30,11 @@ public class JwtUtil {
         this.refreshExpiryDays = refreshExpiryDays;
     }
 
+    /** Access-token lifetime in seconds, for the expiresIn field of a token response. */
+    public long getAccessTokenExpirySeconds() {
+        return expiryMinutes * 60;
+    }
+
     public String generateAccessToken(UUID userId, String email, String role) {
         Instant now = Instant.now();
         Instant expiry = now.plus(expiryMinutes, ChronoUnit.MINUTES);
