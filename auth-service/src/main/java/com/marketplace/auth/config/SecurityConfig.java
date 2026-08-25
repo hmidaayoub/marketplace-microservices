@@ -53,6 +53,12 @@ public class SecurityConfig {
                 
                 .anyRequest().authenticated()
             )
+            // 401 for unauthenticated callers; the default entry point returns 403,
+            // which misreports missing credentials as a permissions problem.
+            // customer and seller already do this.
+            .exceptionHandling(ex -> ex.authenticationEntryPoint(
+                new org.springframework.security.web.authentication.HttpStatusEntryPoint(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED)))
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(internalApiKeyFilter, JwtAuthenticationFilter.class);
 

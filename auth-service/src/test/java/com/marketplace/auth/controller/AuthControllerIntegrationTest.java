@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.marketplace.auth.AbstractIntegrationTest;
 import com.marketplace.auth.dto.LoginRequest;
 import com.marketplace.auth.dto.RegisterRequest;
+import com.marketplace.auth.dto.UpdateUserRequest;
 import com.marketplace.auth.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -307,6 +309,118 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
         mockMvc.perform(post("/api/auth/refresh")
                 .header("X-Refresh-Token", forged))
             .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void refresh_shouldIssueNewTokens_whenRefreshTokenValid() throws Exception {
+        registerCustomerAndGetUserId("refresh@test.com", "+9999999994");
+        String refreshToken = loginAndGet("refresh@test.com", "refreshToken");
+
+        String response = mockMvc.perform(post("/api/auth/refresh")
+                .header("X-Refresh-Token", refreshToken))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.accessToken").exists())
+            .andExpect(jsonPath("$.refreshToken").exists())
+            .andReturn().getResponse().getContentAsString();
+
+        // rotation: the exchanged token must not work a second time
+        assertThat(objectMapper.readTree(response).get("refreshToken").asText())
+                .isNotEqualTo(refreshToken);
+
+        mockMvc.perform(post("/api/auth/refresh")
+                .header("X-Refresh-Token", refreshToken))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void refresh_shouldReturn401_whenAccessTokenPresentedInstead() throws Exception {
+        registerCustomerAndGetUserId("wrongtype@test.com", "+9999999995");
+        String accessToken = loginAndGet("wrongtype@test.com", "accessToken");
+
+        mockMvc.perform(post("/api/auth/refresh")
+                .header("X-Refresh-Token", accessToken))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void logout_shouldReturn401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(post("/api/auth/logout"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getMe_shouldReturn401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(get("/api/users/me"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getMe_shouldReturn401_whenTokenIsGarbage() throws Exception {
+        mockMvc.perform(get("/api/users/me")
+                .header("Authorization", "Bearer not-a-real-token"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void updateMe_shouldChangeEmail_whenAuthenticated() throws Exception {
+        registerCustomerAndGetUserId("before@test.com", "+9999999996");
+        String accessToken = loginAndGet("before@test.com", "accessToken");
+
+        UpdateUserRequest update = new UpdateUserRequest();
+        update.setEmail("after@test.com");
+
+        mockMvc.perform(put("/api/users/me")
+                .header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.email").value("after@test.com"));
+    }
+
+    @Test
+    void updateMe_shouldReturn409_whenEmailBelongsToAnotherUser() throws Exception {
+        registerCustomerAndGetUserId("taken@test.com", "+9999999997");
+        registerCustomerAndGetUserId("mine@test.com", "+9999999998");
+        String accessToken = loginAndGet("mine@test.com", "accessToken");
+
+        UpdateUserRequest update = new UpdateUserRequest();
+        update.setEmail("taken@test.com");
+
+        mockMvc.perform(put("/api/users/me")
+                .header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)))
+            .andExpect(status().isConflict());
+    }
+
+    @Test
+    void register_shouldReturn400_whenPayloadInvalid() throws Exception {
+        RegisterRequest bad = new RegisterRequest();
+        bad.setEmail("not-an-email");
+        bad.setPassword("short");
+        bad.setPhoneNumber("nonsense");
+
+        mockMvc.perform(post("/api/auth/register/customer")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(bad)))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.errors.email").exists())
+            .andExpect(jsonPath("$.errors.password").exists())
+            .andExpect(jsonPath("$.errors.phoneNumber").exists());
+    }
+
+    private String loginAndGet(String email, String field) throws Exception {
+        LoginRequest login = new LoginRequest();
+        login.setEmail(email);
+        login.setPassword("password123");
+
+        String response = mockMvc.perform(post("/api/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(login)))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+
+        return objectMapper.readTree(response).get(field).asText();
     }
 
     private String registerCustomerAndGetUserId(String email, String phoneNumber) throws Exception {
