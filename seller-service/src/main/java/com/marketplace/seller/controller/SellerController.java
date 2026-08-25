@@ -1,6 +1,7 @@
 package com.marketplace.seller.controller;
 
 import com.marketplace.seller.dto.SellerCreateRequest;
+import com.marketplace.seller.dto.SellerPublicResponse;
 import com.marketplace.seller.dto.SellerResponse;
 import com.marketplace.seller.dto.SellerUpdateRequest;
 import com.marketplace.seller.service.SellerService;
@@ -41,7 +42,7 @@ public class SellerController {
     }
 
     @GetMapping("/{sellerId}")
-    public ResponseEntity<SellerResponse> getPublicProfile(@PathVariable UUID sellerId) {
-        return ResponseEntity.ok(sellerService.getSellerById(sellerId));
+    public ResponseEntity<SellerPublicResponse> getPublicProfile(@PathVariable UUID sellerId) {
+        return ResponseEntity.ok(sellerService.getPublicSellerById(sellerId));
     }
 }

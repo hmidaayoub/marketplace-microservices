@@ -2,6 +2,7 @@ package com.marketplace.seller.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.marketplace.seller.dto.SellerCreateRequest;
+import com.marketplace.seller.dto.SellerPublicResponse;
 import com.marketplace.seller.dto.SellerResponse;
 import com.marketplace.seller.service.SellerService;
 import org.junit.jupiter.api.Test;
@@ -38,9 +39,9 @@ class SellerControllerTest {
     @Test
     void shouldGetPublicProfile() throws Exception {
         UUID sellerId = UUID.randomUUID();
-        var response = new SellerResponse(sellerId, UUID.randomUUID(), "PubStore", "Desc", "City", "Addr", 0.0, null, null);
+        var response = new SellerPublicResponse(sellerId, "PubStore", "Desc", "City", 0.0, null);
 
-        when(sellerService.getSellerById(sellerId)).thenReturn(response);
+        when(sellerService.getPublicSellerById(sellerId)).thenReturn(response);
 
         mockMvc.perform(get("/api/sellers/{sellerId}", sellerId))
                 .andExpect(status().isOk())

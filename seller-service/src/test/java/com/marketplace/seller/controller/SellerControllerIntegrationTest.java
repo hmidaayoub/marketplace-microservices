@@ -114,6 +114,24 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    void publicProfile_shouldNotExposeAddressOrUserId() throws Exception {
+        mockMvc.perform(get("/api/sellers/" + sellerId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.storeName").value("Testcontainers Store"))
+            .andExpect(jsonPath("$.city").value("Tunis"))
+            .andExpect(jsonPath("$.address").doesNotExist())
+            .andExpect(jsonPath("$.userId").doesNotExist());
+    }
+
+    @Test
+    void myProfile_shouldStillExposeAddress() throws Exception {
+        mockMvc.perform(get("/api/sellers/me")
+                .header("Authorization", bearerToken))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.address").value("12 Rue Example"));
+    }
+
+    @Test
     void actuatorHealth_shouldBeReachableWithoutCredentials() throws Exception {
         mockMvc.perform(get("/actuator/health"))
             .andExpect(status().isOk())

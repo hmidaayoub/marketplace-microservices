@@ -1,6 +1,7 @@
 package com.marketplace.seller.service;
 
 import com.marketplace.seller.dto.SellerCreateRequest;
+import com.marketplace.seller.dto.SellerPublicResponse;
 import com.marketplace.seller.dto.SellerResponse;
 import com.marketplace.seller.dto.SellerUpdateRequest;
 import com.marketplace.seller.exception.SellerAlreadyExistsException;
@@ -50,6 +51,19 @@ public class SellerService {
         Seller seller = sellerRepository.findById(sellerId)
                 .orElseThrow(() -> new SellerNotFoundException("Seller not found: " + sellerId));
         return mapToResponse(seller);
+    }
+
+    @Transactional(readOnly = true)
+    public SellerPublicResponse getPublicSellerById(UUID sellerId) {
+        Seller seller = sellerRepository.findById(sellerId)
+                .orElseThrow(() -> new SellerNotFoundException("Seller not found: " + sellerId));
+        return new SellerPublicResponse(
+                seller.getSellerId(),
+                seller.getStoreName(),
+                seller.getDescription(),
+                seller.getCity(),
+                seller.getRating(),
+                seller.getCreatedAt());
     }
 
     @Transactional

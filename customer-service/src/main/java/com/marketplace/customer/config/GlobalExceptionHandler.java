@@ -20,6 +20,12 @@ public class GlobalExceptionHandler {
     record ErrorResponse(String message, int status, LocalDateTime timestamp) {}
     record ValidationError(Map<String, String> errors, int status, LocalDateTime timestamp) {}
 
+    @ExceptionHandler(InvalidUserRoleException.class)
+    public ResponseEntity<?> handleInvalidRole(InvalidUserRoleException ex) {
+        return ResponseEntity.status(org.springframework.http.HttpStatus.FORBIDDEN)
+                .body(java.util.Map.of("message", ex.getMessage(), "status", 403));
+    }
+
     @ExceptionHandler(CustomerNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotFound(CustomerNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)

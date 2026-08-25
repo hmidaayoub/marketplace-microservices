@@ -56,7 +56,7 @@ class CustomerServiceImplTest {
     @Test
     void createProfile_shouldCreateCustomer_whenUserExists() {
         when(customerRepository.existsByUserId(userId)).thenReturn(false);
-        when(authClient.userExists(userId)).thenReturn(true);
+        doNothing().when(authClient).verifyCustomer(userId);
         when(customerRepository.save(any(Customer.class))).thenReturn(customer);
         when(customerMapper.toResponse(any())).thenReturn(
             CustomerResponse.builder()

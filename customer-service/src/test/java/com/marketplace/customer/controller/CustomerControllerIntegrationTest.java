@@ -45,7 +45,7 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
                 .willReturn(WireMock.aResponse()
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
-                        .withBody("{\"userId\":\"" + userId + "\",\"email\":\"test@example.com\"}")));
+                        .withBody("{\"userId\":\"" + userId + "\",\"email\":\"test@example.com\",\"role\":\"CUSTOMER\"}")));
     }
 
     @Test
@@ -151,6 +151,45 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
                 .header("X-Internal-Api-Key", internalApiKey))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.firstName").value("Dave"));
+    }
+
+    @Test
+    @Transactional
+    void createProfile_shouldSendInternalApiKeyToAuthService() throws Exception {
+        CustomerRequest request = new CustomerRequest();
+        request.setFirstName("Frank");
+        request.setLastName("Ng");
+
+        mockMvc.perform(post("/api/customers")
+                .header("Authorization", bearerToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isCreated());
+
+        WireMock.verify(WireMock.getRequestedFor(
+                WireMock.urlEqualTo("/internal/users/" + userId))
+                .withHeader("X-Internal-Api-Key", WireMock.equalTo(internalApiKey)));
+    }
+
+    @Test
+    @Transactional
+    void createProfile_shouldReject_whenAuthUserIsNotACustomer() throws Exception {
+        // auth-service reports this account as a SELLER
+        WireMock.stubFor(WireMock.get(WireMock.urlEqualTo("/internal/users/" + userId))
+                .willReturn(WireMock.aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"userId\":\"" + userId + "\",\"email\":\"s@example.com\",\"role\":\"SELLER\"}")));
+
+        CustomerRequest request = new CustomerRequest();
+        request.setFirstName("Grace");
+        request.setLastName("Lee");
+
+        mockMvc.perform(post("/api/customers")
+                .header("Authorization", bearerToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isForbidden());
     }
 
     @Test

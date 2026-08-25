@@ -33,7 +33,7 @@ public class CustomerServiceImpl implements CustomerService {
             throw new CustomerAlreadyExistsException("Customer profile already exists for this user");
         }
 
-        authClient.userExists(userId);
+        authClient.verifyCustomer(userId);
 
         Customer customer = Customer.builder()
                 .userId(userId)
