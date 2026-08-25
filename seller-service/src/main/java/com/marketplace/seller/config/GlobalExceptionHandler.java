@@ -14,6 +14,21 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    @ExceptionHandler(com.marketplace.common.security.InvalidTokenException.class)
+    public ProblemDetail handleInvalidToken(com.marketplace.common.security.InvalidTokenException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    }
+
+    @ExceptionHandler(com.marketplace.seller.exception.InvalidUserRoleException.class)
+    public ProblemDetail handleInvalidRole(com.marketplace.seller.exception.InvalidUserRoleException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(com.marketplace.seller.exception.AuthServiceException.class)
+    public ProblemDetail handleAuthServiceDown(com.marketplace.seller.exception.AuthServiceException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+    }
+
     @ExceptionHandler(SellerNotFoundException.class)
     public ProblemDetail handleNotFound(SellerNotFoundException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());

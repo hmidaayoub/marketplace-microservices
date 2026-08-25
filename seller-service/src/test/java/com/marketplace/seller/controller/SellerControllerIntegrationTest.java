@@ -1,5 +1,6 @@
 package com.marketplace.seller.controller;
 
+import com.github.tomakehurst.wiremock.client.WireMock;
 import com.marketplace.common.security.JwtUtil;
 import com.marketplace.seller.AbstractIntegrationTest;
 import com.marketplace.seller.domain.Seller;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.cloud.contract.wiremock.AutoConfigureWireMock;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
@@ -18,6 +20,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@AutoConfigureWireMock(port = 0)
 class SellerControllerIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired MockMvc mockMvc;
@@ -44,6 +47,7 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
                 .build());
         sellerId = seller.getSellerId();
         bearerToken = "Bearer " + jwtUtil.generateAccessToken(userId, "seller@test.com", "SELLER");
+        stubAuthRole(userId, "SELLER");
     }
 
     @Test
@@ -95,6 +99,7 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
         UUID authenticatedUser = UUID.randomUUID();
         UUID spoofedUser = UUID.randomUUID();
         String token = "Bearer " + jwtUtil.generateAccessToken(authenticatedUser, "new@test.com", "SELLER");
+        stubAuthRole(authenticatedUser, "SELLER");
 
         mockMvc.perform(post("/api/sellers")
                 .header("Authorization", token)
@@ -137,4 +142,42 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("UP"));
     }
+
+    @Test
+    void createSeller_shouldReject_whenAuthUserIsNotASeller() throws Exception {
+        UUID customerUser = UUID.randomUUID();
+        String token = "Bearer " + jwtUtil.generateAccessToken(customerUser, "c@test.com", "CUSTOMER");
+        stubAuthRole(customerUser, "CUSTOMER");
+
+        mockMvc.perform(post("/api/sellers")
+                .header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"storeName\":\"Not A Seller\"}"))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void createSeller_shouldSendInternalApiKeyToAuthService() throws Exception {
+        UUID newUser = UUID.randomUUID();
+        String token = "Bearer " + jwtUtil.generateAccessToken(newUser, "k@test.com", "SELLER");
+        stubAuthRole(newUser, "SELLER");
+
+        mockMvc.perform(post("/api/sellers")
+                .header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"storeName\":\"Keyed Store\"}"))
+            .andExpect(status().isCreated());
+
+        WireMock.verify(WireMock.getRequestedFor(WireMock.urlEqualTo("/internal/users/" + newUser))
+                .withHeader("X-Internal-Api-Key", WireMock.equalTo(internalApiKey)));
+    }
+
+    private void stubAuthRole(UUID user, String role) {
+        WireMock.stubFor(WireMock.get(WireMock.urlEqualTo("/internal/users/" + user))
+                .willReturn(WireMock.aResponse()
+                        .withStatus(200)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"userId\":\"" + user + "\",\"role\":\"" + role + "\"}")));
+    }
+
 }

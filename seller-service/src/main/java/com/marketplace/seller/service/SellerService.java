@@ -7,6 +7,7 @@ import com.marketplace.seller.dto.SellerUpdateRequest;
 import com.marketplace.seller.exception.SellerAlreadyExistsException;
 import com.marketplace.seller.exception.SellerNotFoundException;
 import com.marketplace.seller.domain.Seller;
+import com.marketplace.seller.client.AuthClient;
 import com.marketplace.seller.repository.SellerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,12 +20,15 @@ import java.util.UUID;
 public class SellerService {
 
     private final SellerRepository sellerRepository;
+    private final AuthClient authClient;
 
     @Transactional
     public SellerResponse createSeller(UUID userId, SellerCreateRequest request) {
         if (sellerRepository.existsByUserId(userId)) {
             throw new SellerAlreadyExistsException("Seller profile already exists for this user");
         }
+
+        authClient.verifySeller(userId);
 
         Seller seller = Seller.builder()
                 .userId(userId)

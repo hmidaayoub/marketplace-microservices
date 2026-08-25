@@ -71,10 +71,10 @@ public class JwtUtil {
                     .getPayload();
         } catch (ExpiredJwtException e) {
             log.warn("JWT token expired");
-            throw new RuntimeException("Token expired");
+            throw new InvalidTokenException("Token expired");
         } catch (JwtException e) {
             log.warn("Invalid JWT token: {}", e.getMessage());
-            throw new RuntimeException("Invalid token");
+            throw new InvalidTokenException("Invalid token");
         }
     }
 

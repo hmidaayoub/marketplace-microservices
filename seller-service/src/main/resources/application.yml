@@ -16,6 +16,10 @@ spring:
     enabled: true
     baseline-on-migrate: true
 
+auth:
+  service:
+    url: ${AUTH_SERVICE_URL:http://localhost:8081}
+
 jwt:
   secret: ${JWT_SECRET:change-me-in-production-min-256-bits-long-secret-key}
 

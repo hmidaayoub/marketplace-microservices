@@ -29,6 +29,9 @@ class SellerServiceTest {
     @Mock
     private SellerRepository sellerRepository;
 
+    @Mock
+    private com.marketplace.seller.client.AuthClient authClient;
+
     @InjectMocks
     private SellerService sellerService;
 

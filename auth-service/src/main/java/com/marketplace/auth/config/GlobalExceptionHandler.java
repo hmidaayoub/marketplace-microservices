@@ -20,6 +20,12 @@ public class GlobalExceptionHandler {
     record ErrorResponse(String message, int status, LocalDateTime timestamp) {}
     record ValidationError(Map<String, String> errors, int status, LocalDateTime timestamp) {}
 
+    @ExceptionHandler(com.marketplace.common.security.InvalidTokenException.class)
+    public ResponseEntity<?> handleInvalidToken(com.marketplace.common.security.InvalidTokenException ex) {
+        return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                .body(java.util.Map.of("message", ex.getMessage(), "status", 401));
+    }
+
     @ExceptionHandler(EmailAlreadyExistsException.class)
     public ResponseEntity<ErrorResponse> handleEmailExists(EmailAlreadyExistsException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
