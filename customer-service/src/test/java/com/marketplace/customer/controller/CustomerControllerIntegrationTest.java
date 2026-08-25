@@ -230,4 +230,18 @@ class CustomerControllerIntegrationTest extends AbstractIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("UP"));
     }
+
+    @Test
+    void internalGetCustomer_shouldReturn400_whenCustomerIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/internal/customers/not-a-uuid")
+                .header("X-Internal-Api-Key", internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void internalGetCustomerByUser_shouldReturn400_whenUserIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/internal/customers/by-user/not-a-uuid")
+                .header("X-Internal-Api-Key", internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
 }

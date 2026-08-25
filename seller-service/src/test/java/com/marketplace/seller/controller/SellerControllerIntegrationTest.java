@@ -172,6 +172,19 @@ class SellerControllerIntegrationTest extends AbstractIntegrationTest {
                 .withHeader("X-Internal-Api-Key", WireMock.equalTo(internalApiKey)));
     }
 
+    @Test
+    void publicProfile_shouldReturn400_whenSellerIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/api/sellers/not-a-uuid"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void internalGetSeller_shouldReturn400_whenSellerIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/internal/sellers/not-a-uuid")
+                .header("X-Internal-Api-Key", internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
+
     private void stubAuthRole(UUID user, String role) {
         WireMock.stubFor(WireMock.get(WireMock.urlEqualTo("/internal/users/" + user))
                 .willReturn(WireMock.aResponse()

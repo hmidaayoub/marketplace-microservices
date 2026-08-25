@@ -21,7 +21,7 @@ seller service ever stores or returns one.
 | Notification | 8087 | `notification_db` | Not started |
 | API Gateway | 8080 | — | Not started |
 
-63 tests currently pass across the four modules.
+82 tests currently pass across the four modules.
 
 ## Tech Stack
 

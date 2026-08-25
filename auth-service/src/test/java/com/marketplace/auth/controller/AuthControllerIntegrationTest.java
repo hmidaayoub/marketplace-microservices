@@ -436,6 +436,20 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
         assertThat(jwtUtil.extractRole(accessToken)).isEqualTo("ADMIN");
     }
 
+    @Test
+    void internalGetUser_shouldReturn400_whenUserIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/internal/users/not-a-uuid")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void internalGetPhone_shouldReturn400_whenUserIdIsNotAUuid() throws Exception {
+        mockMvc.perform(get("/internal/users/not-a-uuid/phone")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
+
     private String loginAndGet(String email, String field) throws Exception {
         LoginRequest login = new LoginRequest();
         login.setEmail(email);
