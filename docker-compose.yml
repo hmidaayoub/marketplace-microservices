@@ -56,6 +56,17 @@ services:
       URLS_PRIMARY_NAME: auth-service
       # Persist the pasted token across the dropdown, so one login covers every spec.
       PERSIST_AUTHORIZATION: "true"
+    healthcheck:
+      # BASE_URL is /docs, so / is a 404 even when the container is perfectly well -
+      # the probe has to ask for the page the gateway actually proxies.
+      #
+      # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first
+      # and this nginx listens on IPv4 only, exactly as the gateway does.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   gateway:
     image: nginx:1.27-alpine
@@ -68,9 +79,14 @@ services:
       seller-service: {condition: service_healthy}
       request-service: {condition: service_healthy}
       admin-service: {condition: service_healthy}
-      # These two declare no healthcheck of their own, so there is no health to wait on.
-      offer-service: {condition: service_started}
-      notification-service: {condition: service_started}
+      # These two declare their healthcheck in their Dockerfile rather than here, but it
+      # is a healthcheck all the same - and the edge routes API traffic to them, so
+      # coming up before they can serve it would just turn a slow start into a 502.
+      offer-service: {condition: service_healthy}
+      notification-service: {condition: service_healthy}
+      # Started, not healthy: the docs are not on the path of a single API request, and
+      # holding the whole edge closed until a documentation UI is ready gets that
+      # backwards.
       swagger-ui: {condition: service_started}
     healthcheck:
       # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first
