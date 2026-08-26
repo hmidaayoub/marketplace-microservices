@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Marketplace Microservices",
-    "description": "Auth (8081), Customer (8082), Seller (8083), Request (8084), Offer (8085), Admin/Contact (8086).\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nRequests under *Internal* send X-Internal-Api-Key. These are service-to-service endpoints and must never be exposed publicly.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
+    "description": "Auth (8081), Customer (8082), Seller (8083), Request (8084), Offer (8085), Admin/Contact (8086), Notification (8087).\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nRequests under *Internal* send X-Internal-Api-Key. These are service-to-service endpoints and must never be exposed publicly.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -95,6 +95,18 @@
     },
     {
       "key": "grantedCustomerId",
+      "value": ""
+    },
+    {
+      "key": "notificationUrl",
+      "value": "http://localhost:8087"
+    },
+    {
+      "key": "notificationId",
+      "value": ""
+    },
+    {
+      "key": "customer2UserId",
       "value": ""
     }
   ],
@@ -655,7 +667,12 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"logged in\", () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set(\"customer2AccessToken\", pm.response.json().accessToken);"
+                  "pm.collectionVariables.set(\"customer2AccessToken\", pm.response.json().accessToken);",
+                  "// customer 2 has a fixed identity, so its register call answers 409 on a re-run and",
+                  "// cannot supply the userId. Take it from the token's sub instead - the same claim",
+                  "// every service in the platform resolves identity from.",
+                  "const claims = JSON.parse(atob(pm.response.json().accessToken.split('.')[1]));",
+                  "pm.collectionVariables.set(\"customer2UserId\", claims.sub);"
                 ]
               }
             }
@@ -2125,7 +2142,448 @@
       ]
     },
     {
-      "name": "9. Negative cases",
+      "name": "9. Notification",
+      "description": "Spec sections 13 and 18. Producers post to /internal/notifications; the recipient reads their own inbox. The customer is generated per run, so their inbox starts empty and the counts below are deterministic.",
+      "item": [
+        {
+          "name": "Internal: REQUEST_JOINED to the customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications",
+            "description": "The call request-service makes at the end of flow 1.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"type\": \"REQUEST_JOINED\",\n  \"title\": \"Someone joined your request\",\n  \"message\": \"A customer joined the request for an Espresso Machine.\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"notificationId\", b.notificationId);",
+                  "pm.test(\"IN_APP is delivered by being stored\", () => pm.expect(b.status).to.eql(\"SENT\"));",
+                  "pm.test(\"carries a send time\", () => pm.expect(b.sentAt).to.not.eql(null));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: an EMAIL has no provider yet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications",
+            "description": "Nothing was actually sent, so the status must not claim otherwise - it waits for a dispatcher.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"type\": \"OFFER_APPROVED\",\n  \"channel\": \"EMAIL\",\n  \"title\": \"Your offer was approved\",\n  \"message\": \"An admin approved your offer.\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"left PENDING\", () => pm.expect(b.status).to.eql(\"PENDING\"));",
+                  "pm.test(\"no send time\", () => pm.expect(b.sentAt).to.eql(null));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: bulk REQUEST_CLOSED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications/bulk",
+            "description": "The fan-out to every participant of a request. One transaction: all told, or none. One row lands in customer 1's inbox and the other in customer 2's, which is what makes the counts below add up to three rather than four.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notifications\": [\n    {\n      \"userId\": \"{{userId}}\",\n      \"type\": \"REQUEST_CLOSED\",\n      \"title\": \"Request closed\",\n      \"message\": \"The request you joined has been closed.\"\n    },\n    {\n      \"userId\": \"{{customer2UserId}}\",\n      \"type\": \"REQUEST_CLOSED\",\n      \"title\": \"Request closed\",\n      \"message\": \"The request you joined has been closed.\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"one per recipient\", () => pm.expect(pm.response.json().created).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: one bad entry rejects the batch -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications/bulk",
+            "description": "A half-delivered fan-out cannot be safely retried, so nothing is written.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notifications\": [\n    {\n      \"userId\": \"{{userId}}\",\n      \"type\": \"REQUEST_CLOSED\",\n      \"title\": \"Fine\",\n      \"message\": \"ok\"\n    },\n    {\n      \"userId\": \"{{userId}}\",\n      \"type\": \"not a valid type\",\n      \"title\": \"Broken\",\n      \"message\": \"no\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: caller-supplied status -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications",
+            "description": "status is not a field on the create schema; smuggling one in is rejected, not ignored.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"type\": \"NEW_OFFER\",\n  \"title\": \"x\",\n  \"message\": \"y\",\n  \"status\": \"READ\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: without the key -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{notificationUrl}}/internal/notifications",
+            "description": "Creating is service-to-service only.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"type\": \"NEW_OFFER\",\n  \"title\": \"x\",\n  \"message\": \"y\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My notifications",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/me",
+            "description": "The caller's own inbox, newest first. Scoped by the token's sub, never by a parameter."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"the three addressed to this customer\", () => pm.expect(b.length).to.eql(3));",
+                  "pm.test(\"newest first\", () => pm.expect(b[0].type).to.eql(\"REQUEST_CLOSED\"));",
+                  "pm.test(\"all belong to the caller\", () =>",
+                  "    b.forEach(n => pm.expect(n.userId).to.eql(pm.collectionVariables.get(\"userId\"))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unread count",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/me/unread-count",
+            "description": "Backs the unread badge."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"all three unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(3));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mark one read",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "description": "Only the owner may, and the owner is the token's sub."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"READ\", () => pm.expect(pm.response.json().status).to.eql(\"READ\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unread count drops",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/me/unread-count",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"one fewer unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Marking read again is idempotent",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "description": "Reading is not a decision: two devices syncing the same inbox is ordinary, so a repeat returns the notification unchanged rather than the 409 a repeated decision gets."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"still ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"still READ\", () => pm.expect(pm.response.json().status).to.eql(\"READ\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unread only",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/me?unreadOnly=true",
+            "description": "The read one drops out of the filter but stays in the inbox."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"two unread\", () => pm.expect(pm.response.json().length).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another user's notification -> 404",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "description": "404 rather than 403: answering 403 would confirm the id exists, which would turn this route into an oracle for enumerating other people's notifications."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not found\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"leaks nothing about it\", () =>",
+                  "    pm.expect(pm.response.text()).to.not.include(\"READ\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inbox without a token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{notificationUrl}}/api/notifications/me",
+            "description": "Identity comes from the token, so there is no anonymous inbox."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed notificationId -> 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/not-a-uuid/read",
+            "description": "Same wording as every other service (issue #28)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"shared error shape\", () => pm.expect(pm.response.json().message)",
+                  "    .to.eql(\"Invalid value for parameter 'notificationId'\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Negative cases",
       "item": [
         {
           "name": "No credentials -> 401",
@@ -2525,7 +2983,7 @@
       ]
     },
     {
-      "name": "10. Health",
+      "name": "11. Health",
       "item": [
         {
           "name": "Auth health",
@@ -2666,11 +3124,32 @@
               }
             }
           ]
+        },
+        {
+          "name": "Notification service health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{notificationUrl}}/actuator/health",
+            "description": "Same probe path as every other service."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"up\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"reports UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "11. Session teardown",
+      "name": "12. Session teardown",
       "item": [
         {
           "name": "Leave request",

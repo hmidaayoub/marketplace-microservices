@@ -18,18 +18,21 @@ seller service ever stores or returns one.
 | Request | 8084 | `request_db` | Implemented (Go) |
 | Offer | 8085 | `offer_db` | Implemented (Python) |
 | Admin/Contact | 8086 | `admin_contact_db` | Implemented (Go) |
-| Notification | 8087 | `notification_db` | Not started |
+| Notification | 8087 | `notification_db` | Implemented (Python) |
 | API Gateway | 8080 | — | Not started |
 
-212 tests pass in total: 82 across the four Maven modules, 74 across the two Go
-modules (46 request, 28 admin), and 56 in the Python module.
+269 tests pass in total: 82 across the four Maven modules, 74 across the two Go
+modules (46 request, 28 admin), and 113 across the two Python modules (56 offer,
+57 notification).
+
+Every service in the spec is now implemented; only the API Gateway is outstanding.
 
 The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
-Request and Admin/Contact are Go, Offer is Python. They interoperate only through HTTP
-and a shared JWT secret, which is the boundary the architecture already assumed - no
-service reads another's database, so the language behind an endpoint is not something
-its callers can observe. All three stacks return the same error shape, and a malformed
-path variable reads identically whichever one answers it.
+Request and Admin/Contact are Go, Offer and Notification are Python. They interoperate
+only through HTTP and a shared JWT secret, which is the boundary the architecture
+already assumed - no service reads another's database, so the language behind an
+endpoint is not something its callers can observe. All three stacks return the same
+error shape, and a malformed path variable reads identically whichever one answers it.
 
 ## Tech Stack
 
@@ -60,7 +63,7 @@ path variable reads identically whichever one answers it.
 | JWT | golang-jwt v5 | Verifies tokens minted by auth-service's jjwt |
 | Integration testing | testcontainers-go (PostgreSQL 15) | Real Postgres, real migrations |
 
-### Python stack (offer-service)
+### Python stack (offer-service, notification-service)
 
 | Concern | Choice | Notes |
 |---|---|---|
@@ -99,7 +102,8 @@ marketplace-microservices/
 ├── seller-service/
 ├── request-service/    Go module, independent of the Maven reactor
 ├── admin-service/      Go module, independent of the Maven reactor
-└── offer-service/      Python module, independent of the Maven reactor
+├── offer-service/      Python module, independent of the Maven reactor
+└── notification-service/  Python module, independent of the Maven reactor
 ```
 
 `common-security` holds `JwtUtil`, `JwtAuthenticationFilter` and `InternalApiKeyFilter`
@@ -292,9 +296,63 @@ Rules worth knowing:
   grants; every number is fetched from auth-service per call and passed straight
   through.
 
+## Notification Service
+
+Records and delivers the events of spec section 18. It is not the source of truth for
+any business data, and that shows in its shape: it is the only service in the platform
+with no outbound dependency at all. A producer has already decided who the recipient is
+and what the message says by the time it calls here, so this service never resolves an
+identity or reads another service's data - it takes a `userId`, a rendered title and a
+message, and owns only the delivery and read state that follow.
+
+| Method | Endpoint | Who |
+|---|---|---|
+| `GET` | `/api/notifications/me` | any authenticated user |
+| `GET` | `/api/notifications/me/unread-count` | any authenticated user |
+| `PATCH` | `/api/notifications/{notificationId}/read` | the recipient |
+| `POST` | `/internal/notifications` | internal key |
+| `POST` | `/internal/notifications/bulk` | internal key |
+
+| Event | Produced by | Recipient |
+|---|---|---|
+| `REQUEST_JOINED` | Request | the customer |
+| `NEW_OFFER` | Offer | the admins |
+| `OFFER_APPROVED` | Admin/Contact | the seller |
+| `OFFER_REJECTED` | Admin/Contact | the seller |
+| `CONTACT_ACCESS_GRANTED` | Admin/Contact | the seller |
+| `REQUEST_CLOSED` | Request | every participant |
+
+Rules worth knowing:
+
+- **The status column always reflects a real outcome.** `IN_APP` needs no provider —
+  the row *is* the delivery, so storing it sends it and it goes straight to `SENT`.
+  `EMAIL`, `SMS` and `PUSH` have no provider wired in this MVP, so they are left
+  `PENDING` for a dispatcher rather than being marked `SENT` on the strength of nothing
+  having happened. A `CHECK` constraint ties `sent_at` to the status so the two cannot
+  drift.
+- **Another user's notification answers 404, not 403.** A 403 would confirm the id
+  exists, which turns the read endpoint into an oracle for enumerating other people's
+  notifications. The ownership test is part of the lookup rather than a separate
+  authorisation step, so no code path can return someone else's row.
+- **Marking read is idempotent**, unlike the decide-and-revoke calls elsewhere in the
+  platform that answer 409 on a repeat. Those are decisions, where a second attempt
+  means the caller believes something no longer true. Reading is not a decision — two
+  devices syncing one inbox is ordinary — so a repeat returns the notification
+  unchanged. A notification that was never delivered cannot be read at all.
+- **The unread count excludes `FAILED`.** A notification that never reached the user is
+  an operational problem, not an unread message.
+- **A fan-out is all or nothing.** `REQUEST_CLOSED` reaching some participants and not
+  others, with no record of which, is worse than reaching none: the producer could not
+  safely retry it. One transaction means a failed call is simply repeated.
+- **The event set is open by design.** Section 13 introduces the list with "Examples",
+  so the column is shape-checked (`^[A-Z][A-Z0-9_]*$`) rather than constrained to an
+  enum — adding an event to the platform never means migrating this table.
+- **There is no public write route.** Creating is service-to-service only, so a user
+  cannot manufacture their own notifications.
+
 ## Running Locally
 
-The root compose file runs the whole system — six services and their six databases —
+The root compose file runs the whole system — seven services and their seven databases —
 on one network, with the shared secrets pinned in one place:
 
 ```bash
@@ -340,7 +398,7 @@ The Python module uses [uv](https://docs.astral.sh/uv/), which manages its own p
 interpreter — no system Python or virtualenv setup required:
 
 ```bash
-cd offer-service
+cd offer-service                # or: cd notification-service
 uv sync --all-groups            # create .venv from uv.lock
 uv run pytest                   # unit + integration; starts its own Postgres
 uv run ruff check . && uv run ruff format --check .
@@ -348,6 +406,8 @@ uv run uvicorn app.main:app --port 8085 --reload
 
 DATABASE_URL=postgres://postgres:postgres@localhost:5436/offer_db \
   uv run pytest                 # reuse a running Postgres instead of a container
+DATABASE_URL=postgres://postgres:postgres@localhost:5438/notification_db \
+  uv run pytest                 # the same switch for notification-service
 ```
 
 After changing a SQLAlchemy model, write the matching migration — the model alone never
@@ -367,7 +427,7 @@ classes.
 
 - `docs/` — the full technical specification (business rules, service boundaries,
   interaction flows).
-- `postman/marketplace.postman_collection.json` — 91 requests covering every service,
+- `postman/marketplace.postman_collection.json` — 107 requests covering every service,
   the internal APIs, negative cases and health. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is

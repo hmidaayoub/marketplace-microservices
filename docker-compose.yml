@@ -78,6 +78,16 @@ services:
     volumes: [admin_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
+  notification-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5438:5432"]
+    volumes: [notification_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
   auth-service:
     build:
       context: .
@@ -221,6 +231,24 @@ services:
       retries: 12
       start_period: 10s
 
+  # The second Python service, and the only one in the platform with no outbound
+  # dependency: producers hand it a userId and a rendered message, so it never has to
+  # resolve an identity or read another service's data. It therefore waits on nothing
+  # but its own database.
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports: ["8087:8087"]
+    environment:
+      <<: *secrets
+      DB_HOST: notification-db
+      DB_NAME: notification_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    depends_on:
+      notification-db: {condition: service_healthy}
+
 volumes:
   auth_db_data:
   customer_db_data:
@@ -228,3 +256,4 @@ volumes:
   request_db_data:
   offer_db_data:
   admin_db_data:
+  notification_db_data:

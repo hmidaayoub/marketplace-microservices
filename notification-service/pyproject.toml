@@ -1,0 +1,40 @@
+[project]
+name = "notification-service"
+version = "0.1.0"
+description = "Notification Service - records and delivers notifications (spec section 13)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "pyjwt>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "testcontainers[postgres]>=4.9",
+    "ruff>=0.8",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# The golden JWTs in test_security.py are single opaque tokens; wrapping them would
+# corrupt the values being tested.
+"tests/test_security.py" = ["E501"]
