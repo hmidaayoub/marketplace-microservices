@@ -68,6 +68,16 @@ services:
     volumes: [offer_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
+  admin-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: admin_contact_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5437:5432"]
+    volumes: [admin_db_data:/var/lib/postgresql/data]
+    healthcheck: *db-healthcheck
+
   auth-service:
     build:
       context: .
@@ -105,6 +115,12 @@ services:
     depends_on:
       customer-db: {condition: service_healthy}
       auth-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
   seller-service:
     build:
@@ -121,9 +137,15 @@ services:
     depends_on:
       seller-db: {condition: service_healthy}
       auth-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
-  # The only Go service. It reaches customer-service to turn the token's userId into
-  # the customerId that participation records, so it waits for that to be healthy.
+  # The first of two Go services. It reaches customer-service to turn the token's userId
+  # into the customerId that participation records, so it waits for that to be healthy.
   request-service:
     build:
       context: .
@@ -138,7 +160,7 @@ services:
       CUSTOMER_SERVICE_URL: http://customer-service:8082
     depends_on:
       request-db: {condition: service_healthy}
-      customer-service: {condition: service_started}
+      customer-service: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
       interval: 10s
@@ -163,8 +185,41 @@ services:
       REQUEST_SERVICE_URL: http://request-service:8084
     depends_on:
       offer-db: {condition: service_healthy}
-      seller-service: {condition: service_started}
+      seller-service: {condition: service_healthy}
       request-service: {condition: service_healthy}
+
+  # The second Go service, and the most connected one: deciding an offer touches
+  # offer-service and request-service, and answering a seller's contact lookup walks
+  # seller-service, customer-service and auth-service in turn. It waits on all of them.
+  admin-service:
+    build:
+      context: .
+      dockerfile: admin-service/Dockerfile
+    ports: ["8086:8086"]
+    environment:
+      <<: *secrets
+      DB_HOST: admin-db
+      DB_NAME: admin_contact_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      AUTH_SERVICE_URL: http://auth-service:8081
+      CUSTOMER_SERVICE_URL: http://customer-service:8082
+      SELLER_SERVICE_URL: http://seller-service:8083
+      REQUEST_SERVICE_URL: http://request-service:8084
+      OFFER_SERVICE_URL: http://offer-service:8085
+    depends_on:
+      admin-db: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+      customer-service: {condition: service_healthy}
+      seller-service: {condition: service_healthy}
+      request-service: {condition: service_healthy}
+      offer-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8086/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
 volumes:
   auth_db_data:
@@ -172,3 +227,4 @@ volumes:
   seller_db_data:
   request_db_data:
   offer_db_data:
+  admin_db_data:

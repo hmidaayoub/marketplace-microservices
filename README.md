@@ -17,19 +17,19 @@ seller service ever stores or returns one.
 | Seller | 8083 | `seller_db` | Implemented |
 | Request | 8084 | `request_db` | Implemented (Go) |
 | Offer | 8085 | `offer_db` | Implemented (Python) |
-| Admin/Contact | 8086 | `admin_contact_db` | Not started |
+| Admin/Contact | 8086 | `admin_contact_db` | Implemented (Go) |
 | Notification | 8087 | `notification_db` | Not started |
 | API Gateway | 8080 | — | Not started |
 
-184 tests pass in total: 82 across the four Maven modules, 46 in the Go module, 56 in
-the Python module.
+212 tests pass in total: 82 across the four Maven modules, 74 across the two Go
+modules (46 request, 28 admin), and 56 in the Python module.
 
 The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
-Request is Go, Offer is Python. They interoperate only through HTTP and a shared JWT
-secret, which is the boundary the architecture already assumed - no service reads
-another's database, so the language behind an endpoint is not something its callers can
-observe. All three stacks return the same error shape, and a malformed path variable
-reads identically whichever one answers it.
+Request and Admin/Contact are Go, Offer is Python. They interoperate only through HTTP
+and a shared JWT secret, which is the boundary the architecture already assumed - no
+service reads another's database, so the language behind an endpoint is not something
+its callers can observe. All three stacks return the same error shape, and a malformed
+path variable reads identically whichever one answers it.
 
 ## Tech Stack
 
@@ -49,7 +49,7 @@ reads identically whichever one answers it.
 | Observability | Spring Boot Actuator | `/actuator/health` for probes |
 | Containers | Docker, Docker Compose | Multi-stage builds, non-root runtime user |
 
-### Go stack (request-service)
+### Go stack (request-service, admin-service)
 
 | Concern | Choice | Notes |
 |---|---|---|
@@ -98,6 +98,7 @@ marketplace-microservices/
 ├── customer-service/
 ├── seller-service/
 ├── request-service/    Go module, independent of the Maven reactor
+├── admin-service/      Go module, independent of the Maven reactor
 └── offer-service/      Python module, independent of the Maven reactor
 ```
 
@@ -150,6 +151,9 @@ Endpoints deliberately return different shapes to different audiences:
 | `GET /internal/requests/{id}/participants` | `customerIds` | — |
 | `GET /api/offers/{id}` (rival seller) | `CompetingOfferOut` | **sellerId** |
 | `GET /api/offers/{id}` (owner, customer, admin) | Full offer | — |
+| `GET /api/contacts/requests/{id}` (granted seller) | `customerId` + **phone** | everything else |
+| `GET /api/contacts/requests/{id}` (ungranted seller) | 403 | **the whole list** |
+| `GET /internal/contact-access` | `allowed` boolean | the grant records behind it |
 
 ## Request Service
 
@@ -205,6 +209,7 @@ Owns seller proposals against aggregated demand (spec section 11).
 | `PUT` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
 | `DELETE` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
 | `GET` | `/internal/offers/pending` | internal key |
+| `GET` | `/internal/offers/{offerId}` | internal key |
 | `PATCH` | `/internal/offers/{offerId}/status` | internal key |
 
 Rules worth knowing:
@@ -227,14 +232,69 @@ Rules worth knowing:
   sensibly — they do not need the identity behind it.
 - **R7 is enforced upstream.** Admin/Contact authenticates the ADMIN and writes the
   audit record, then relays the outcome through the internal `PATCH`, which accepts only
-  `APPROVED` or `REJECTED`. This service holds status, not authority.
+  `APPROVED` or `REJECTED`. This service holds status, not authority. The internal
+  read-by-id exists for the same caller: the grant an approval produces links seller,
+  request and offer together, so Admin/Contact must take those ids from the service that
+  owns them rather than from the admin submitting the decision.
 - **Identity is never accepted from the caller.** The token's `sub` is resolved to a
   `sellerId` through seller-service; a body carrying `sellerId` or `status` is rejected
   outright, not ignored.
 
+## Admin/Contact Service
+
+Decides offers and owns permission to expose customer contact information (spec
+section 12). It is the most connected service in the platform: deciding an offer
+touches offer-service and request-service, and answering a seller's contact lookup
+walks seller-service, customer-service and auth-service in turn.
+
+| Method | Endpoint | Who |
+|---|---|---|
+| `GET` | `/api/admin/offers/pending` | ADMIN |
+| `POST` | `/api/admin/offers/{offerId}/approve` | ADMIN |
+| `POST` | `/api/admin/offers/{offerId}/reject` | ADMIN |
+| `GET` | `/api/admin/contact-access` | ADMIN |
+| `DELETE` | `/api/admin/contact-access/{accessId}` | ADMIN |
+| `GET` | `/api/contacts/requests/{requestId}` | SELLER |
+| `GET` | `/internal/contact-access` | internal key |
+
+Rules worth knowing:
+
+- **This is where R7 lives.** `/api/admin/**` is ADMIN-only as a whole subtree, so a
+  new admin route cannot be added without inheriting the check. Offer-service holds the
+  resulting status but not the authority to set it — it accepts the outcome through its
+  internal `PATCH` and refuses anything but `APPROVED` or `REJECTED`.
+- **Approving does not expose a phone number** (R8). It writes one `ContactAccess` row
+  per customer on the request, and that row is what a later contact lookup checks. The
+  two are separate tables precisely so approval and exposure cannot be conflated.
+- **A phone number is fetched only for a GRANTED, unexpired row** (R9). A seller with
+  no grant is refused before auth-service is called at all, so an unauthorised request
+  never reaches the service that holds the number.
+- **Grants are per seller.** Approving one seller's offer tells a rival seller nothing,
+  even on the same request.
+- **The decision and its grants are one unit.** The offer is read and the participants
+  fetched before anything is written; the local rows are then written and the remote
+  status flipped inside a single transaction that commits last. If offer-service
+  refuses the relay, everything rolls back and the offer is left `PENDING` rather than
+  approved with no grants behind it. The remaining window — a commit failing after
+  offer-service accepted the `PATCH` — needs an outbox to close properly, and is the
+  one place this service can diverge from offer-service.
+- **One decision per offer** (R7). Enforced by a unique constraint on `offer_id` rather
+  than a read-then-write check, which two concurrent approvals would both pass. A
+  second decision is a 409, never a silent overwrite of the audit record.
+- **Revoking is a status change, not a delete.** The row is the audit history of who
+  was allowed to reach whom; deleting it would erase the record this service exists to
+  keep. It takes effect on the next contact lookup.
+- **Identity is never accepted from the caller.** The admin on a decision comes from
+  the token's `sub`, and the seller on a contact lookup is resolved through
+  seller-service. The verdict comes from which route was called, so a body carrying
+  `decision` is rejected outright, not ignored.
+- **No phone number is ever stored here** (R10). `admin_contact_db` holds ids and
+  grants; every number is fetched from auth-service per call and passed straight
+  through.
+
 ## Running Locally
 
-The root compose file runs the whole system — five services and their five databases —
+The root compose file runs the whole system — six services and their six databases —
 on one network, with the shared secrets pinned in one place:
 
 ```bash
@@ -257,20 +317,23 @@ mvn -pl auth-service test       # one module's tests
 mvn clean install -DskipTests   # build without testing
 ```
 
-The Go module builds and tests on its own, outside the Maven reactor:
+The two Go modules build and test on their own, outside the Maven reactor:
 
 ```bash
-cd request-service
+cd request-service              # or: cd admin-service
 go test ./...                   # unit + integration; starts its own Postgres
 go build ./...
 DATABASE_URL=postgres://postgres:postgres@localhost:5435/request_db?sslmode=disable \
   go test ./...                 # reuse a running Postgres instead of a container
+DATABASE_URL=postgres://postgres:postgres@localhost:5437/admin_contact_db?sslmode=disable \
+  go test ./...                 # the same switch for admin-service, on its own port
 ```
 
 Regenerate the data layer after changing any SQL under `internal/db/`:
 
 ```bash
-cd request-service && sqlc generate     # or: docker run --rm -v "$PWD":/src -w /src sqlc/sqlc generate
+cd request-service && sqlc generate     # or admin-service; both carry their own sqlc.yaml
+# without a local sqlc: docker run --rm -v "$PWD":/src -w /src sqlc/sqlc generate
 ```
 
 The Python module uses [uv](https://docs.astral.sh/uv/), which manages its own pinned
@@ -304,7 +367,7 @@ classes.
 
 - `docs/` — the full technical specification (business rules, service boundaries,
   interaction flows).
-- `postman/marketplace.postman_collection.json` — 71 requests covering every service,
+- `postman/marketplace.postman_collection.json` — 91 requests covering every service,
   the internal APIs, negative cases and health. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is

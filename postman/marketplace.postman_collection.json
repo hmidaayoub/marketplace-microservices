@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Marketplace Microservices",
-    "description": "Auth (8081), Customer (8082), Seller (8083).\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nRequests under *Internal* send X-Internal-Api-Key. These are service-to-service endpoints and must never be exposed publicly.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
+    "description": "Auth (8081), Customer (8082), Seller (8083), Request (8084), Offer (8085), Admin/Contact (8086).\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nRequests under *Internal* send X-Internal-Api-Key. These are service-to-service endpoints and must never be exposed publicly.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -79,6 +79,22 @@
     },
     {
       "key": "offerId",
+      "value": ""
+    },
+    {
+      "key": "adminUrl",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "adminOfferId",
+      "value": ""
+    },
+    {
+      "key": "accessId",
+      "value": ""
+    },
+    {
+      "key": "grantedCustomerId",
       "value": ""
     }
   ],
@@ -1560,7 +1576,556 @@
       ]
     },
     {
-      "name": "8. Negative cases",
+      "name": "8. Admin / Contact",
+      "description": "Spec flows 3 and 4. The admin decides an offer, which creates one ContactAccess per customer on the request (R8), and only then can that seller read phone numbers (R9). Uses its own offer so the internal PATCH in folder 7 keeps working on {{offerId}}.",
+      "item": [
+        {
+          "name": "Second offer to decide here",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers",
+            "description": "A separate offer, so this folder decides one that folder 7 has not already PATCHed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 4,\n  \"pricePerUnit\": \"139.50\",\n  \"currency\": \"EUR\",\n  \"description\": \"Admin flow offer\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"adminOfferId\", pm.response.json().offerId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Seller has no contacts yet -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "description": "R9: approval has not happened, so no permission exists and no number is fetched."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"no phone number in the body\", () =>",
+                  "    pm.expect(pm.response.text()).to.not.match(/\\+\\d{6,}/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin: pending queue",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "description": "Served straight from offer-service, which owns offer state."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"our offer is queued\", () => pm.expect(pm.response.json()",
+                  "    .map(o => o.offerId)).to.include(pm.collectionVariables.get(\"adminOfferId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Seller cannot read the queue -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "description": "R7: the decision surface is ADMIN-only."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer cannot read the queue -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "description": "R7: the decision surface is ADMIN-only."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve the offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/approve",
+            "description": "Flow 3: records the decision, relays APPROVED to offer-service, and grants one ContactAccess per customer on the request.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Best price for the aggregated demand\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"decision is APPROVED\", () => pm.expect(b.decision).to.eql(\"APPROVED\"));",
+                  "pm.test(\"admin taken from the token\", () =>",
+                  "    pm.expect(b.adminUserId).to.be.a(\"string\"));",
+                  "pm.test(\"granted one contact per participant\", () =>",
+                  "    pm.expect(b.contactsGranted).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offer service now holds APPROVED",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{offerUrl}}/api/offers/{{adminOfferId}}",
+            "description": "The status change was relayed, so the service that owns offer state agrees."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"APPROVED\", () => pm.expect(pm.response.json().status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deciding the same offer twice -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/reject",
+            "description": "R7: one decision per offer. The second is refused, not silently applied over the audit record.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"changed my mind\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"conflict\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Seller retrieves the authorized contacts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "description": "Flow 4: the one public endpoint that returns a phone number, and only to a seller holding a GRANTED permission for that request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"contacts returned\", () => pm.expect(b.contacts).to.be.an(\"array\").that.is.not.empty);",
+                  "pm.test(\"each contact carries a phone number\", () =>",
+                  "    b.contacts.forEach(x => pm.expect(x.phoneNumber).to.be.a(\"string\").and.not.empty));",
+                  "pm.collectionVariables.set(\"grantedCustomerId\", b.contacts[0].customerId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin lists the permissions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/contact-access?requestId={{requestId}}",
+            "description": "The audit view of who may reach whom."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json();",
+                  "pm.test(\"grants exist\", () => pm.expect(rows).to.be.an(\"array\").that.is.not.empty);",
+                  "pm.test(\"all GRANTED\", () => rows.forEach(r => pm.expect(r.status).to.eql(\"GRANTED\")));",
+                  "pm.collectionVariables.set(\"accessId\", rows[0].accessId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: validate contact permission",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{adminUrl}}/internal/contact-access?sellerId={{sellerId}}&customerId={{grantedCustomerId}}",
+            "description": "How another service asks whether a seller may reach a customer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"allowed\", () => pm.expect(pm.response.json().allowed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: permission check without the key -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{adminUrl}}/internal/contact-access?sellerId={{sellerId}}&customerId={{grantedCustomerId}}",
+            "description": "Internal endpoints fail closed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"unauthorized\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoke a permission",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/contact-access/{{accessId}}",
+            "description": "A status change, not a delete: the row stays as audit history."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"REVOKED\", () => pm.expect(pm.response.json().status).to.eql(\"REVOKED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoking twice -> 409",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/contact-access/{{accessId}}",
+            "description": "The grant is no longer GRANTED, so there is nothing to revoke."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"conflict\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Revoking an unknown permission -> 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/contact-access/00000000-0000-0000-0000-000000000000",
+            "description": "No such grant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not found\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer cannot read seller contacts -> 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "description": "The contact route is the seller's own list, not a general read."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed offerId -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/not-a-uuid/approve",
+            "description": "Same wording as every other service (issue #28).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"shared error shape\", () => pm.expect(pm.response.json().message)",
+                  "    .to.eql(\"Invalid value for parameter 'offerId'\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Caller-supplied decision -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/approve",
+            "description": "The verdict comes from the route, never the body; an unknown field is rejected outright.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"x\",\n  \"decision\": \"REJECTED\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approving an unknown offer -> 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminAccessToken}}"
+              }
+            ],
+            "url": "{{adminUrl}}/api/admin/offers/00000000-0000-0000-0000-000000000000/approve",
+            "description": "Nothing to decide.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not found\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. Negative cases",
       "item": [
         {
           "name": "No credentials -> 401",
@@ -1960,7 +2525,7 @@
       ]
     },
     {
-      "name": "9. Health",
+      "name": "10. Health",
       "item": [
         {
           "name": "Auth health",
@@ -2080,11 +2645,32 @@
               }
             }
           ]
+        },
+        {
+          "name": "Admin service health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{adminUrl}}/actuator/health",
+            "description": "Same probe path as every other service."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"up\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"reports UP\", () => pm.expect(pm.response.json().status).to.eql(\"UP\"));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "10. Session teardown",
+      "name": "11. Session teardown",
       "item": [
         {
           "name": "Leave request",

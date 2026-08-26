@@ -32,6 +32,23 @@ async def pending_offers(
     return [OfferOut.of(offer).model_dump(by_alias=True, mode="json") for offer in offers]
 
 
+@router.get("/{offer_id}", response_model=None)
+async def read_offer(offer_id: uuid.UUID, session: SessionDep) -> dict[str, Any]:
+    """Reads one offer for a service that needs the terms behind it.
+
+    Every other service exposes an internal read-by-id; this is offer-service's.
+    Admin/Contact calls it before recording a decision, because the grant an approval
+    produces links seller, customer, request and offer together, and it must take the
+    sellerId and requestId from the service that owns them rather than from the admin
+    submitting the decision.
+
+    Declared after /pending so the literal path is matched first - otherwise "pending"
+    would be parsed as an offer_id and rejected as a malformed UUID.
+    """
+    offer = await service.get_offer(session, offer_id)
+    return OfferOut.of(offer).model_dump(by_alias=True, mode="json")
+
+
 @router.patch("/{offer_id}/status", response_model=None)
 async def set_status(
     offer_id: uuid.UUID, payload: StatusUpdate, session: SessionDep
