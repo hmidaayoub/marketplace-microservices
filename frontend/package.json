@@ -1,0 +1,33 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "codegen": "openapi-typescript http://localhost:8080/openapi/auth.json -o src/api/schema/auth.ts && openapi-typescript http://localhost:8080/openapi/customer.json -o src/api/schema/customer.ts && openapi-typescript http://localhost:8080/openapi/seller.json -o src/api/schema/seller.ts && openapi-typescript http://localhost:8080/openapi/request.json -o src/api/schema/request.ts && openapi-typescript http://localhost:8080/openapi/offer.json -o src/api/schema/offer.ts && openapi-typescript http://localhost:8080/openapi/admin.json -o src/api/schema/admin.ts && openapi-typescript http://localhost:8080/openapi/notification.json -o src/api/schema/notification.ts",
+    "e2e": "node e2e/signup.mjs"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.12.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-redux": "^9.3.0",
+    "react-router-dom": "^7.18.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "oxlint": "^1.79.0",
+    "playwright": "^1.62.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}
