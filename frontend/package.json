@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "codegen": "openapi-typescript http://localhost:8080/openapi/auth.json -o src/api/schema/auth.ts && openapi-typescript http://localhost:8080/openapi/customer.json -o src/api/schema/customer.ts && openapi-typescript http://localhost:8080/openapi/seller.json -o src/api/schema/seller.ts && openapi-typescript http://localhost:8080/openapi/request.json -o src/api/schema/request.ts && openapi-typescript http://localhost:8080/openapi/offer.json -o src/api/schema/offer.ts && openapi-typescript http://localhost:8080/openapi/admin.json -o src/api/schema/admin.ts && openapi-typescript http://localhost:8080/openapi/notification.json -o src/api/schema/notification.ts",
+    "codegen": "node scripts/codegen.mjs",
     "e2e": "node e2e/signup.mjs"
   },
   "dependencies": {
