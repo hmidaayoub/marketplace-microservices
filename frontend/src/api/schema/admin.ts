@@ -475,6 +475,8 @@ export interface components {
     schemas: {
         "admin.contact": {
             customerId?: string;
+            firstName?: string;
+            lastName?: string;
             phoneNumber?: string;
         };
         "admin.contactAccessResponse": {

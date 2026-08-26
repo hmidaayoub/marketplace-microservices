@@ -61,6 +61,7 @@ type sellerResolver interface {
 
 type customerResolver interface {
 	ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error)
+	Resolve(ctx context.Context, customerID uuid.UUID) (clients.Customer, error)
 }
 
 type phoneReader interface {
@@ -367,16 +368,22 @@ func (s *Service) ContactsForRequest(ctx context.Context, userID, requestID uuid
 	for _, grant := range grants {
 		// customerId -> userId -> phone. Three hops, none of them skippable: this
 		// service knows customerIds, and only auth-service can turn a userId into a
-		// number.
-		contactUserID, err := s.deps.Customers.ResolveUserID(ctx, grant.CustomerID)
+		// number. The first hop already returns the name, so it is carried through
+		// rather than fetched again.
+		customer, err := s.deps.Customers.Resolve(ctx, grant.CustomerID)
 		if err != nil {
 			return nil, fmt.Errorf("resolving customer %s: %w", grant.CustomerID, err)
 		}
-		phone, err := s.deps.Auth.Phone(ctx, contactUserID)
+		phone, err := s.deps.Auth.Phone(ctx, customer.UserID)
 		if err != nil {
 			return nil, fmt.Errorf("reading phone for customer %s: %w", grant.CustomerID, err)
 		}
-		contacts = append(contacts, contact{CustomerID: grant.CustomerID, PhoneNumber: phone})
+		contacts = append(contacts, contact{
+			CustomerID:  grant.CustomerID,
+			FirstName:   customer.FirstName,
+			LastName:    customer.LastName,
+			PhoneNumber: phone,
+		})
 	}
 	return contacts, nil
 }

@@ -45,10 +45,20 @@ type contactAccessResponse struct {
 }
 
 // contact is what a seller receives once permission exists: the customer they may
-// reach and the number to reach them on, and nothing else about that person. The
-// number is fetched from auth-service per call and never stored here (R10).
+// reach, the name to ask for, and the number to reach them on - and nothing else about
+// that person. No address, no email, no account status.
+//
+// The name is a deliberate widening of R10's projection. A seller holding a phone
+// number needs to know who answers it, and the name is strictly less sensitive than the
+// number already released beside it. It costs no extra call either: customer-service
+// returns it in the same response this service already reads to make the customerId to
+// userId join.
+//
+// The number itself is still fetched from auth-service per call and never stored here.
 type contact struct {
 	CustomerID  uuid.UUID `json:"customerId"`
+	FirstName   string    `json:"firstName"`
+	LastName    string    `json:"lastName"`
 	PhoneNumber string    `json:"phoneNumber"`
 }
 

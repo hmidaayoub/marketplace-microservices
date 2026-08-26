@@ -61,20 +61,36 @@ func NewCustomer(baseURL, apiKey string, httpClient *http.Client) *CustomerClien
 	return &CustomerClient{t: transport{baseURL: baseURL, apiKey: apiKey, name: "customer-service", http: httpClient}}
 }
 
-// ResolveUserID maps a customerId back to the global userId. Request-service records
-// participation as customerIds, but phone numbers are keyed by userId in auth-service,
-// so this is the join between the two halves of the identity model.
-func (c *CustomerClient) ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error) {
-	var out struct {
-		UserID uuid.UUID `json:"userId"`
-	}
+// Customer is the part of a customer profile this service passes on: the join to the
+// identity model, and the name a granted seller is shown alongside the number.
+type Customer struct {
+	UserID    uuid.UUID `json:"userId"`
+	FirstName string    `json:"firstName"`
+	LastName  string    `json:"lastName"`
+}
+
+// Resolve reads one customer profile. Request-service records participation as
+// customerIds, but phone numbers are keyed by userId in auth-service, so this is the
+// join between the two halves of the identity model - and the same response already
+// carries the name, so putting a name next to a number costs no extra call.
+func (c *CustomerClient) Resolve(ctx context.Context, customerID uuid.UUID) (Customer, error) {
+	var out Customer
 	if err := c.t.do(ctx, http.MethodGet, "/internal/customers/"+customerID.String(), nil, &out); err != nil {
-		return uuid.Nil, err
+		return Customer{}, err
 	}
 	if out.UserID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("%w: customer-service: response had no userId", ErrUnavailable)
+		return Customer{}, fmt.Errorf("%w: customer-service: response had no userId", ErrUnavailable)
 	}
-	return out.UserID, nil
+	return out, nil
+}
+
+// ResolveUserID keeps the narrow call for the paths that only need the join.
+func (c *CustomerClient) ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error) {
+	customer, err := c.Resolve(ctx, customerID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return customer.UserID, nil
 }
 
 type AuthClient struct{ t transport }
