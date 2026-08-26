@@ -45,3 +45,13 @@ management:
     health:
       probes:
         enabled: true
+
+# Only the public surface is documented. /internal is service-to-service and has no
+# route through the gateway, so publishing it in a spec would advertise an API that
+# nothing outside the cluster can call.
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  paths-to-match: /api/**
+  swagger-ui:
+    enabled: false

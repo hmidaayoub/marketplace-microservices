@@ -28,6 +28,16 @@ func NewHandler(service *Service) *Handler {
 }
 
 // PendingOffers handles GET /api/admin/offers/pending.
+//
+//	@Summary	List offers awaiting a decision
+//	@Description The admin queue. Offers stay here until approved or rejected.
+//	@Tags		admin
+//	@Produce	json
+//	@Success	200	{array}		pendingOfferResponse
+//	@Failure	401	{object}	httpx.ErrorBody
+//	@Failure	403	{object}	httpx.ErrorBody	"Not an ADMIN"
+//	@Security	bearerAuth
+//	@Router		/api/admin/offers/pending [get]
 func (h *Handler) PendingOffers(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := pageParams(w, r)
 	if !ok {
@@ -44,11 +54,45 @@ func (h *Handler) PendingOffers(w http.ResponseWriter, r *http.Request) {
 }
 
 // Approve handles POST /api/admin/offers/{offerId}/approve.
+//
+//	@Summary	Approve an offer and grant contact access
+//	@Description Approving is what unlocks the seller's access to the customers' phone
+//	@Description numbers on that request - the single gate in the whole flow. Returns
+//	@Description 201: the decision is a new record, not a mutation of the offer.
+//	@Tags		admin
+//	@Accept		json
+//	@Produce	json
+//	@Param		offerId	path		string			true	"Offer id"	format(uuid)
+//	@Param		body	body		decisionBody	false	"Reason recorded with the decision"
+//	@Success	201		{object}	decisionResponse
+//	@Failure	400		{object}	httpx.ErrorBody	"Malformed id or body"
+//	@Failure	401		{object}	httpx.ErrorBody
+//	@Failure	403		{object}	httpx.ErrorBody	"Not an ADMIN"
+//	@Failure	404		{object}	httpx.ErrorBody	"No such offer"
+//	@Failure	409		{object}	httpx.ErrorBody	"Already decided"
+//	@Security	bearerAuth
+//	@Router		/api/admin/offers/{offerId}/approve [post]
 func (h *Handler) Approve(w http.ResponseWriter, r *http.Request) {
 	h.decide(w, r, DecisionApproved)
 }
 
 // Reject handles POST /api/admin/offers/{offerId}/reject.
+//
+//	@Summary	Reject an offer
+//	@Description Grants nothing: a rejected offer leaves the seller without contact access.
+//	@Tags		admin
+//	@Accept		json
+//	@Produce	json
+//	@Param		offerId	path		string			true	"Offer id"	format(uuid)
+//	@Param		body	body		decisionBody	false	"Reason recorded with the decision"
+//	@Success	201		{object}	decisionResponse
+//	@Failure	400		{object}	httpx.ErrorBody
+//	@Failure	401		{object}	httpx.ErrorBody
+//	@Failure	403		{object}	httpx.ErrorBody	"Not an ADMIN"
+//	@Failure	404		{object}	httpx.ErrorBody
+//	@Failure	409		{object}	httpx.ErrorBody	"Already decided"
+//	@Security	bearerAuth
+//	@Router		/api/admin/offers/{offerId}/reject [post]
 func (h *Handler) Reject(w http.ResponseWriter, r *http.Request) {
 	h.decide(w, r, DecisionRejected)
 }
@@ -96,6 +140,20 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, decision string
 }
 
 // ListAccess handles GET /api/admin/contact-access.
+//
+//	@Summary	List contact-access grants
+//	@Description The audit trail behind the phone-number rule: who was granted access to
+//	@Description which request, and whether it is still live.
+//	@Tags		admin
+//	@Produce	json
+//	@Param		requestId	query		string	false	"Filter by request"	format(uuid)
+//	@Param		sellerId	query		string	false	"Filter by seller"	format(uuid)
+//	@Success	200			{array}		contactAccessResponse
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not an ADMIN"
+//	@Security	bearerAuth
+//	@Router		/api/admin/contact-access [get]
 func (h *Handler) ListAccess(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := pageParams(w, r)
 	if !ok {
@@ -128,6 +186,20 @@ func (h *Handler) ListAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 // RevokeAccess handles DELETE /api/admin/contact-access/{accessId}.
+//
+//	@Summary	Revoke a contact-access grant
+//	@Description The grant is marked revoked rather than deleted, so the audit trail
+//	@Description still shows it was once given.
+//	@Tags		admin
+//	@Produce	json
+//	@Param		accessId	path		string	true	"Grant id"	format(uuid)
+//	@Success	200			{object}	contactAccessResponse
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not an ADMIN"
+//	@Failure	404			{object}	httpx.ErrorBody	"No such grant"
+//	@Security	bearerAuth
+//	@Router		/api/admin/contact-access/{accessId} [delete]
 func (h *Handler) RevokeAccess(w http.ResponseWriter, r *http.Request) {
 	accessID, ok := pathUUID(w, r, "accessId")
 	if !ok {
@@ -146,6 +218,20 @@ func (h *Handler) RevokeAccess(w http.ResponseWriter, r *http.Request) {
 // Contacts handles GET /api/contacts/requests/{requestId}, the one public endpoint in
 // the platform that returns a phone number - and only to a seller the admin has
 // granted access to, for the customers on that specific request (R9).
+//
+//	@Summary	Read the customer contacts for a request
+//	@Description The only public endpoint in the platform that returns a phone number,
+//	@Description and only to a seller whose offer was approved for this request. The
+//	@Description sellerId is resolved from the token, never read from the request.
+//	@Tags		contacts
+//	@Produce	json
+//	@Param		requestId	path		string	true	"Request id"	format(uuid)
+//	@Success	200			{object}	contactsResponse
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not a SELLER, or no access granted for this request"
+//	@Security	bearerAuth
+//	@Router		/api/contacts/requests/{requestId} [get]
 func (h *Handler) Contacts(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {

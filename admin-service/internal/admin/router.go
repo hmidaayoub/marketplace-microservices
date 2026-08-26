@@ -7,6 +7,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/auth"
+	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/docs"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/httpx"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/middleware"
 )
@@ -33,6 +34,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	health := healthHandler(cfg.Ready)
 	r.Get("/health", health)
 	r.Get("/actuator/health", health)
+
+	// This service's own OpenAPI document, generated from the handler annotations. Open
+	// because it describes only the public surface and carries no data; the aggregated
+	// Swagger UI at the gateway fetches it from the browser.
+	r.Get("/v3/api-docs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(docs.SpecJSON)
+	})
 
 	// R7: every route below decides or undoes a decision, so ADMIN is required on the
 	// whole subtree rather than route by route - a new admin route cannot be added

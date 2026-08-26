@@ -32,6 +32,31 @@ services:
   # need to - add the opt-in override:
   #
   #   docker compose -f docker-compose.yml -f docker-compose.direct.yml up
+  # The aggregated API documentation: one page, a dropdown over all seven specs. Each
+  # service generates its own from its own code - springdoc for the Java three, `swag
+  # init` for the Go two, FastAPI's own for the Python two - so nothing here is a second
+  # description that can fall out of step with a handler.
+  #
+  # Reached only through the gateway at /docs, so Try it out calls the API on the same
+  # origin the page came from and needs no CORS exemption of its own.
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.17.14
+    environment:
+      BASE_URL: /docs
+      # The dropdown. Names, not ports: which container answers is the gateway's
+      # business, and these paths keep working when it stops being a container at all.
+      URLS: >-
+        [{"name":"auth-service","url":"/openapi/auth.json"},
+         {"name":"customer-service","url":"/openapi/customer.json"},
+         {"name":"seller-service","url":"/openapi/seller.json"},
+         {"name":"request-service","url":"/openapi/request.json"},
+         {"name":"offer-service","url":"/openapi/offer.json"},
+         {"name":"admin-service","url":"/openapi/admin.json"},
+         {"name":"notification-service","url":"/openapi/notification.json"}]
+      URLS_PRIMARY_NAME: auth-service
+      # Persist the pasted token across the dropdown, so one login covers every spec.
+      PERSIST_AUTHORIZATION: "true"
+
   gateway:
     image: nginx:1.27-alpine
     ports: ["8080:8080"]
@@ -46,6 +71,7 @@ services:
       # These two declare no healthcheck of their own, so there is no health to wait on.
       offer-service: {condition: service_started}
       notification-service: {condition: service_started}
+      swagger-ui: {condition: service_started}
     healthcheck:
       # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first
       # and nginx listens on IPv4 only, so the probe would be refused by a healthy edge.

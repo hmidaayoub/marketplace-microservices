@@ -9,9 +9,9 @@ import (
 	"net/http"
 )
 
-// errorBody matches the error shape the Java services return, so a client sees one
+// ErrorBody matches the error shape the Java services return, so a client sees one
 // error contract across the platform rather than one per language.
-type errorBody struct {
+type ErrorBody struct {
 	Message string `json:"message"`
 	Status  int    `json:"status"`
 }
@@ -29,7 +29,7 @@ func JSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func Error(w http.ResponseWriter, status int, message string) {
-	JSON(w, status, errorBody{Message: message, Status: status})
+	JSON(w, status, ErrorBody{Message: message, Status: status})
 }
 
 // DecodeJSON reads a request body strictly: unknown fields are rejected so a caller

@@ -37,6 +37,20 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 }
 
 // Create handles POST /api/requests.
+//
+//	@Summary	Create a purchase request
+//	@Description Opens a request other customers can join. The caller becomes its first
+//	@Description participant; the customerId is resolved from the token, never sent.
+//	@Tags		requests
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body		createRequestBody	true	"Item, category and the caller's own quantity"
+//	@Success	201		{object}	requestResponse
+//	@Failure	400		{object}	httpx.ErrorBody	"Validation failed"
+//	@Failure	401		{object}	httpx.ErrorBody	"Missing or invalid token"
+//	@Failure	403		{object}	httpx.ErrorBody	"Not a CUSTOMER, or no customer profile"
+//	@Security	bearerAuth
+//	@Router		/api/requests [post]
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var body createRequestBody
 	if !httpx.DecodeJSON(w, r, &body) {
@@ -74,6 +88,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 // List handles GET /api/requests. Any authenticated user may browse demand - that is
 // how a seller finds a request worth making an offer against.
+//
+//	@Summary	Browse open demand
+//	@Description Open to any authenticated role, sellers included: this is how a seller
+//	@Description finds a request worth offering against.
+//	@Tags		requests
+//	@Produce	json
+//	@Param		q			query		string	false	"Match on item name"
+//	@Param		category	query		string	false	"Filter by category"
+//	@Param		status		query		string	false	"OPEN, OFFER_APPROVED or CLOSED"
+//	@Param		limit		query		int		false	"Page size, 1-100"	default(20)
+//	@Param		offset		query		int		false	"Rows to skip"		default(0)
+//	@Success	200			{array}		requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody	"Bad paging parameters"
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Security	bearerAuth
+//	@Router		/api/requests [get]
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -104,6 +134,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get handles GET /api/requests/{requestId}.
+//
+//	@Summary	Read one request with its aggregated demand
+//	@Description Returns totals, not the participant list: who joined is withheld from
+//	@Description the public projection and served only on the internal endpoint.
+//	@Tags		requests
+//	@Produce	json
+//	@Param		requestId	path		string	true	"Request id"	format(uuid)
+//	@Success	200			{object}	requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody	"Malformed id"
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	404			{object}	httpx.ErrorBody
+//	@Security	bearerAuth
+//	@Router		/api/requests/{requestId} [get]
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {
@@ -121,6 +164,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 // Mine handles GET /api/requests/me: every request the calling customer takes part in,
 // including the ones they created.
+//
+//	@Summary	List the caller's own requests
+//	@Tags		requests
+//	@Produce	json
+//	@Success	200	{array}		requestResponse
+//	@Failure	401	{object}	httpx.ErrorBody
+//	@Failure	403	{object}	httpx.ErrorBody	"Not a CUSTOMER"
+//	@Security	bearerAuth
+//	@Router		/api/requests/me [get]
 func (h *Handler) Mine(w http.ResponseWriter, r *http.Request) {
 	customerID, ok := h.callerCustomerID(w, r)
 	if !ok {
@@ -137,6 +189,23 @@ func (h *Handler) Mine(w http.ResponseWriter, r *http.Request) {
 }
 
 // Join handles POST /api/requests/{requestId}/participants.
+//
+//	@Summary	Join a request with a quantity
+//	@Description Adds the caller's demand to the aggregate. Joining twice is refused;
+//	@Description use the participants/me endpoint to change a quantity.
+//	@Tags		participation
+//	@Accept		json
+//	@Produce	json
+//	@Param		requestId	path		string			true	"Request id"	format(uuid)
+//	@Param		body		body		quantityBody	true	"Quantity wanted"
+//	@Success	201			{object}	requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody	"Quantity must be positive"
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not a CUSTOMER"
+//	@Failure	404			{object}	httpx.ErrorBody
+//	@Failure	409			{object}	httpx.ErrorBody	"Already joined, or the request is not OPEN"
+//	@Security	bearerAuth
+//	@Router		/api/requests/{requestId}/participants [post]
 func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {
@@ -172,6 +241,23 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateQuantity handles PUT /api/requests/{requestId}/participants/me.
+//
+//	@Summary	Change how much the caller wants
+//	@Description Addressed as participants/me rather than by participant id: a customer
+//	@Description can only ever change their own row, so there is nothing else to name.
+//	@Tags		participation
+//	@Accept		json
+//	@Produce	json
+//	@Param		requestId	path		string			true	"Request id"	format(uuid)
+//	@Param		body		body		quantityBody	true	"New quantity"
+//	@Success	200			{object}	requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not a CUSTOMER"
+//	@Failure	404			{object}	httpx.ErrorBody	"Not a participant"
+//	@Failure	409			{object}	httpx.ErrorBody	"The request is no longer OPEN"
+//	@Security	bearerAuth
+//	@Router		/api/requests/{requestId}/participants/me [put]
 func (h *Handler) UpdateQuantity(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {
@@ -202,6 +288,18 @@ func (h *Handler) UpdateQuantity(w http.ResponseWriter, r *http.Request) {
 }
 
 // Leave handles DELETE /api/requests/{requestId}/participants/me.
+//
+//	@Summary	Withdraw from a request
+//	@Tags		participation
+//	@Param		requestId	path	string	true	"Request id"	format(uuid)
+//	@Success	204			"Withdrawn"
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not a CUSTOMER"
+//	@Failure	404			{object}	httpx.ErrorBody	"Not a participant"
+//	@Failure	409			{object}	httpx.ErrorBody	"The request is no longer OPEN"
+//	@Security	bearerAuth
+//	@Router		/api/requests/{requestId}/participants/me [delete]
 func (h *Handler) Leave(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {
@@ -222,6 +320,21 @@ func (h *Handler) Leave(w http.ResponseWriter, r *http.Request) {
 }
 
 // Close handles POST /api/requests/{requestId}/close.
+//
+//	@Summary	Close a request
+//	@Description Only the creator may close it. Closing notifies every participant in a
+//	@Description single fan-out event, written in the same transaction as the status change.
+//	@Tags		requests
+//	@Produce	json
+//	@Param		requestId	path		string	true	"Request id"	format(uuid)
+//	@Success	200			{object}	requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody
+//	@Failure	401			{object}	httpx.ErrorBody
+//	@Failure	403			{object}	httpx.ErrorBody	"Not the creator"
+//	@Failure	404			{object}	httpx.ErrorBody
+//	@Failure	409			{object}	httpx.ErrorBody	"Already closed"
+//	@Security	bearerAuth
+//	@Router		/api/requests/{requestId}/close [post]
 func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")
 	if !ok {

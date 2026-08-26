@@ -21,6 +21,13 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 )
 
+// @title			admin-service
+// @version		1.0.0
+// @description	Offer decisions and the contact access they grant. Public API only: the /internal endpoints are service-to-service and have no route through the gateway.
+// @BasePath		/
+//
+// @securityDefinitions.bearerauth	bearerAuth
+// @description					Paste the accessToken from POST /api/auth/login.
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 

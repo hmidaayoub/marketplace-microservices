@@ -32,6 +32,10 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Liveness/readiness probes must be reachable unauthenticated;
                 // metrics (incl. prometheus) stay behind the internal API key.
+                // The service's own OpenAPI document. Open because it describes only
+                // the public surface (springdoc.paths-to-match), carries no data, and
+                // the aggregated Swagger UI fetches it from the browser.
+                .requestMatchers("/v3/api-docs/**").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
                 .requestMatchers("/actuator/**").hasAuthority("INTERNAL")
                 // Public routes (no auth required)

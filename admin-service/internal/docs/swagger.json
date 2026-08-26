@@ -1,0 +1,651 @@
+{
+    "components": {
+        "schemas": {
+            "admin.contact": {
+                "properties": {
+                    "customerId": {
+                        "type": "string"
+                    },
+                    "phoneNumber": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "admin.contactAccessResponse": {
+                "properties": {
+                    "accessId": {
+                        "type": "string"
+                    },
+                    "customerId": {
+                        "type": "string"
+                    },
+                    "expiresAt": {
+                        "type": "string"
+                    },
+                    "grantedAt": {
+                        "type": "string"
+                    },
+                    "grantedBy": {
+                        "type": "string"
+                    },
+                    "offerId": {
+                        "type": "string"
+                    },
+                    "requestId": {
+                        "type": "string"
+                    },
+                    "sellerId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "admin.contactsResponse": {
+                "properties": {
+                    "contacts": {
+                        "items": {
+                            "$ref": "#/components/schemas/admin.contact"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "requestId": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "admin.decisionBody": {
+                "properties": {
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "admin.decisionResponse": {
+                "properties": {
+                    "adminUserId": {
+                        "type": "string"
+                    },
+                    "contactsGranted": {
+                        "description": "How many customers the approval exposed to the seller. Zero for a rejection,\nwhich grants nothing (R8).",
+                        "type": "integer"
+                    },
+                    "decidedAt": {
+                        "type": "string"
+                    },
+                    "decision": {
+                        "type": "string"
+                    },
+                    "decisionId": {
+                        "type": "string"
+                    },
+                    "offerId": {
+                        "type": "string"
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "admin.pendingOfferResponse": {
+                "properties": {
+                    "availableQuantity": {
+                        "type": "integer"
+                    },
+                    "currency": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "offerId": {
+                        "type": "string"
+                    },
+                    "pricePerUnit": {
+                        "type": "string"
+                    },
+                    "requestId": {
+                        "type": "string"
+                    },
+                    "sellerId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "httpx.ErrorBody": {
+                "properties": {
+                    "message": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            }
+        },
+        "securitySchemes": {
+            "bearerAuth": {
+                "description": "Paste the accessToken from POST /api/auth/login.",
+                "scheme": "bearer",
+                "type": "http"
+            }
+        }
+    },
+    "info": {
+        "description": "Offer decisions and the contact access they grant. Public API only: the /internal endpoints are service-to-service and have no route through the gateway.",
+        "title": "admin-service",
+        "version": "1.0.0"
+    },
+    "externalDocs": {
+        "description": "",
+        "url": ""
+    },
+    "paths": {
+        "/api/admin/contact-access": {
+            "get": {
+                "description": "The audit trail behind the phone-number rule: who was granted access to\nwhich request, and whether it is still live.",
+                "parameters": [
+                    {
+                        "description": "Filter by request",
+                        "in": "query",
+                        "name": "requestId",
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "Filter by seller",
+                        "in": "query",
+                        "name": "sellerId",
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/admin.contactAccessResponse"
+                                    },
+                                    "type": "array"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not an ADMIN"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "List contact-access grants",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/admin/contact-access/{accessId}": {
+            "delete": {
+                "description": "The grant is marked revoked rather than deleted, so the audit trail\nstill shows it was once given.",
+                "parameters": [
+                    {
+                        "description": "Grant id",
+                        "in": "path",
+                        "name": "accessId",
+                        "required": true,
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.contactAccessResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not an ADMIN"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "No such grant"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "Revoke a contact-access grant",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/admin/offers/pending": {
+            "get": {
+                "description": "The admin queue. Offers stay here until approved or rejected.",
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/admin.pendingOfferResponse"
+                                    },
+                                    "type": "array"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not an ADMIN"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "List offers awaiting a decision",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/admin/offers/{offerId}/approve": {
+            "post": {
+                "description": "Approving is what unlocks the seller's access to the customers' phone\nnumbers on that request - the single gate in the whole flow. Returns\n201: the decision is a new record, not a mutation of the offer.",
+                "parameters": [
+                    {
+                        "description": "Offer id",
+                        "in": "path",
+                        "name": "offerId",
+                        "required": true,
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/admin.decisionBody",
+                                        "summary": "body",
+                                        "description": "Reason recorded with the decision"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Reason recorded with the decision"
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.decisionResponse"
+                                }
+                            }
+                        },
+                        "description": "Created"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Malformed id or body"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not an ADMIN"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "No such offer"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Already decided"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "Approve an offer and grant contact access",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/admin/offers/{offerId}/reject": {
+            "post": {
+                "description": "Grants nothing: a rejected offer leaves the seller without contact access.",
+                "parameters": [
+                    {
+                        "description": "Offer id",
+                        "in": "path",
+                        "name": "offerId",
+                        "required": true,
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/admin.decisionBody",
+                                        "summary": "body",
+                                        "description": "Reason recorded with the decision"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Reason recorded with the decision"
+                },
+                "responses": {
+                    "201": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.decisionResponse"
+                                }
+                            }
+                        },
+                        "description": "Created"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not an ADMIN"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Already decided"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "Reject an offer",
+                "tags": [
+                    "admin"
+                ]
+            }
+        },
+        "/api/contacts/requests/{requestId}": {
+            "get": {
+                "description": "The only public endpoint in the platform that returns a phone number,\nand only to a seller whose offer was approved for this request. The\nsellerId is resolved from the token, never read from the request.",
+                "parameters": [
+                    {
+                        "description": "Request id",
+                        "in": "path",
+                        "name": "requestId",
+                        "required": true,
+                        "schema": {
+                            "format": "uuid",
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/admin.contactsResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "Not a SELLER, or no access granted for this request"
+                    }
+                },
+                "security": [
+                    {
+                        "bearerAuth": []
+                    }
+                ],
+                "summary": "Read the customer contacts for a request",
+                "tags": [
+                    "contacts"
+                ]
+            }
+        }
+    },
+    "openapi": "3.1.0",
+    "servers": [
+        {
+            "url": "/"
+        }
+    ]
+}
