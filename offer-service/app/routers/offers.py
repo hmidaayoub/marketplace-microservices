@@ -30,7 +30,14 @@ def _clients(request: Request):
     return request.app.state.clients
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=None)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    # response_model stays None because the handler projects by role; `responses`
+    # documents the shape without FastAPI filtering the dict on the way out.
+    response_model=None,
+    responses={201: {"model": OfferOut}},
+)
 async def submit_offer(
     payload: OfferCreate, principal: SellerOnly, session: SessionDep, request: Request
 ) -> dict[str, Any]:
@@ -57,7 +64,7 @@ async def submit_offer(
     return OfferOut.of(offer).model_dump(by_alias=True, mode="json")
 
 
-@router.get("/me", response_model=None)
+@router.get("/me", response_model=None, responses={200: {"model": list[OfferOut]}})
 async def my_offers(
     principal: SellerOnly, session: SessionDep, request: Request
 ) -> list[dict[str, Any]]:
@@ -66,7 +73,13 @@ async def my_offers(
     return [OfferOut.of(offer).model_dump(by_alias=True, mode="json") for offer in offers]
 
 
-@router.get("/request/{request_id}", response_model=None)
+@router.get(
+    "/request/{request_id}",
+    response_model=None,
+    # Either shape, depending on who asks: a rival seller gets CompetingOfferOut with
+    # the sellerId withheld, everyone else the full offer.
+    responses={200: {"model": list[OfferOut | CompetingOfferOut]}},
+)
 async def offers_for_request(
     request_id: uuid.UUID, principal: CurrentPrincipal, session: SessionDep, request: Request
 ) -> list[dict[str, Any]]:
@@ -85,7 +98,11 @@ async def offers_for_request(
     return [_project_for_seller(offer, own_seller_id) for offer in offers]
 
 
-@router.get("/{offer_id}", response_model=None)
+@router.get(
+    "/{offer_id}",
+    response_model=None,
+    responses={200: {"model": OfferOut | CompetingOfferOut}},
+)
 async def get_offer(
     offer_id: uuid.UUID, principal: CurrentPrincipal, session: SessionDep, request: Request
 ) -> dict[str, Any]:
@@ -98,7 +115,7 @@ async def get_offer(
     return _project_for_seller(offer, own_seller_id)
 
 
-@router.put("/{offer_id}", response_model=None)
+@router.put("/{offer_id}", response_model=None, responses={200: {"model": OfferOut}})
 async def update_offer(
     offer_id: uuid.UUID,
     payload: OfferUpdate,

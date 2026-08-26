@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
-@router.get("/me", response_model=None)
+@router.get("/me", response_model=None, responses={200: {"model": list[NotificationOut]}})
 async def my_notifications(
     principal: CurrentPrincipal,
     session: SessionDep,
@@ -39,7 +39,9 @@ async def my_notifications(
     ]
 
 
-@router.get("/me/unread-count", response_model=None)
+@router.get(
+    "/me/unread-count", response_model=None, responses={200: {"model": UnreadCountOut}}
+)
 async def my_unread_count(principal: CurrentPrincipal, session: SessionDep) -> dict[str, Any]:
     """Backs the unread badge. Counts PENDING and SENT but not FAILED: a notification
     that never reached the user is an operational problem, not an unread message."""
@@ -47,7 +49,9 @@ async def my_unread_count(principal: CurrentPrincipal, session: SessionDep) -> d
     return UnreadCountOut(unread_count=count).model_dump(by_alias=True, mode="json")
 
 
-@router.patch("/{notification_id}/read", response_model=None)
+@router.patch(
+    "/{notification_id}/read", response_model=None, responses={200: {"model": NotificationOut}}
+)
 async def mark_read(
     notification_id: uuid.UUID, principal: CurrentPrincipal, session: SessionDep
 ) -> dict[str, Any]:
