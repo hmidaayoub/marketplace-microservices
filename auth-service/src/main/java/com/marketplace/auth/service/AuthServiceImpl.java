@@ -21,6 +21,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -192,6 +193,22 @@ public class AuthServiceImpl implements AuthService {
     public User getUserByIdInternal(UUID userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new UserNotFoundException("User not found: " + userId));
+    }
+
+    /**
+     * Every ACTIVE user holding a role.
+     *
+     * Exists because spec section 18 addresses NEW_OFFER to "Admin" rather than to one
+     * person, and roles live here. Notification-service is addressed by userId and never
+     * resolves an identity, so a producer that wants to reach the admins has to ask the
+     * service that owns the role for the list.
+     *
+     * BLOCKED accounts are excluded: a blocked admin is not someone to route work to.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public List<User> getActiveUsersByRole(Role role) {
+        return userRepository.findByRoleAndStatus(role, UserStatus.ACTIVE);
     }
 
     @Override

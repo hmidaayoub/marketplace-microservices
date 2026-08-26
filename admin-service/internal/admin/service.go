@@ -50,6 +50,7 @@ type requestClient interface {
 
 type sellerResolver interface {
 	ResolveSellerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+	ResolveUserID(ctx context.Context, sellerID uuid.UUID) (uuid.UUID, error)
 }
 
 type customerResolver interface {
@@ -85,10 +86,14 @@ type DecideInput struct {
 	Reason      string
 }
 
-// DecideResult carries the audit record and the number of grants it produced.
+// DecideResult carries the audit record, the number of grants it produced, and the
+// offer's seller and request - which the handler needs to address the notification
+// events that follow (spec flow 3, step 7).
 type DecideResult struct {
 	Decision        store.OfferDecision
 	ContactsGranted int
+	SellerID        uuid.UUID
+	RequestID       uuid.UUID
 }
 
 // Decide records an admin's verdict on an offer and, when it is an approval, grants
@@ -179,11 +184,22 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 			return err
 		}
 
-		result = DecideResult{Decision: decision, ContactsGranted: len(customerIDs)}
+		result = DecideResult{
+			Decision:        decision,
+			ContactsGranted: len(customerIDs),
+			SellerID:        offer.SellerID,
+			RequestID:       offer.RequestID,
+		}
 		return nil
 	})
 
 	return result, err
+}
+
+// ResolveSellerUserID exposes the sellerId -> userId hop to the handler, which needs it
+// to address a decision notification.
+func (s *Service) ResolveSellerUserID(ctx context.Context, sellerID uuid.UUID) (uuid.UUID, error) {
+	return s.deps.Sellers.ResolveUserID(ctx, sellerID)
 }
 
 func (s *Service) ListPendingOffers(ctx context.Context, limit, offset int) ([]clients.Offer, error) {

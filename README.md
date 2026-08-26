@@ -21,11 +21,12 @@ seller service ever stores or returns one.
 | Notification | 8087 | `notification_db` | Implemented (Python) |
 | API Gateway | 8080 | — | Not started |
 
-269 tests pass in total: 82 across the four Maven modules, 74 across the two Go
-modules (46 request, 28 admin), and 113 across the two Python modules (56 offer,
-57 notification).
+296 tests pass in total: 87 across the four Maven modules, 82 across the two Go
+modules (50 request, 32 admin), and 127 across the two Python modules (61 offer,
+66 notification).
 
-Every service in the spec is now implemented; only the API Gateway is outstanding.
+Every service in the spec is now implemented and the notification events of section 18
+flow between them over RabbitMQ; only the API Gateway is outstanding.
 
 The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
 Request and Admin/Contact are Go, Offer and Notification are Python. They interoperate
@@ -50,6 +51,7 @@ error shape, and a malformed path variable reads identically whichever one answe
 | Service stubbing | WireMock (spring-cloud-contract) | For cross-service HTTP in tests |
 | Boilerplate | Lombok | |
 | Observability | Spring Boot Actuator | `/actuator/health` for probes |
+| Messaging | RabbitMQ 3.13 (AMQP) | Notification events; topic exchange — see `docs/events.md` |
 | Containers | Docker, Docker Compose | Multi-stage builds, non-root runtime user |
 
 ### Go stack (request-service, admin-service)
@@ -77,7 +79,7 @@ error shape, and a malformed path variable reads identically whichever one answe
 | Testing | pytest + testcontainers | Real Postgres, real migrations |
 | Linting | ruff | |
 
-Planned but not yet wired in: RabbitMQ, Kubernetes, Terraform, GitHub Actions,
+Planned but not yet wired in: Kubernetes, Terraform, GitHub Actions,
 Prometheus & Grafana.
 
 ### Notes on the ORM setup
@@ -299,11 +301,15 @@ Rules worth knowing:
 ## Notification Service
 
 Records and delivers the events of spec section 18. It is not the source of truth for
-any business data, and that shows in its shape: it is the only service in the platform
-with no outbound dependency at all. A producer has already decided who the recipient is
-and what the message says by the time it calls here, so this service never resolves an
-identity or reads another service's data - it takes a `userId`, a rendered title and a
-message, and owns only the delivery and read state that follow.
+any business data, and that shows in its shape: it never resolves an identity or reads
+another service's data. A producer has already decided who the recipient is and what
+the message says by the time the event arrives, so this service takes a `userId`, a
+rendered title and a message, and owns only the delivery and read state that follow.
+
+Events reach it over RabbitMQ rather than a direct HTTP call, so a producer never waits
+on it and a notification is not lost the moment it is slow. The internal HTTP API named
+in section 13 is still served and runs the same code, so the two paths cannot drift.
+The full contract - topology, envelope, delivery guarantees - is in `docs/events.md`.
 
 | Method | Endpoint | Who |
 |---|---|---|
@@ -313,14 +319,18 @@ message, and owns only the delivery and read state that follow.
 | `POST` | `/internal/notifications` | internal key |
 | `POST` | `/internal/notifications/bulk` | internal key |
 
-| Event | Produced by | Recipient |
-|---|---|---|
-| `REQUEST_JOINED` | Request | the customer |
-| `NEW_OFFER` | Offer | the admins |
-| `OFFER_APPROVED` | Admin/Contact | the seller |
-| `OFFER_REJECTED` | Admin/Contact | the seller |
-| `CONTACT_ACCESS_GRANTED` | Admin/Contact | the seller |
-| `REQUEST_CLOSED` | Request | every participant |
+| Event | Routing key | Produced by | Recipient |
+|---|---|---|---|
+| `REQUEST_JOINED` | `request.joined` | Request | the customer who acted |
+| `NEW_OFFER` | `offer.created` | Offer | every ADMIN |
+| `OFFER_APPROVED` | `offer.approved` | Admin/Contact | the seller |
+| `OFFER_REJECTED` | `offer.rejected` | Admin/Contact | the seller |
+| `CONTACT_ACCESS_GRANTED` | `contact.access.granted` | Admin/Contact | the seller |
+| `REQUEST_CLOSED` | `request.closed` | *(no producer yet)* | every participant |
+
+`REQUEST_CLOSED` is specified but has no trigger: nothing in the platform moves a
+request out of `OPEN` today. The consumer handles it already — it needs a close
+operation in request-service, which is a business change rather than wiring.
 
 Rules worth knowing:
 
@@ -349,10 +359,39 @@ Rules worth knowing:
   enum — adding an event to the platform never means migrating this table.
 - **There is no public write route.** Creating is service-to-service only, so a user
   cannot manufacture their own notifications.
+- **An event is applied exactly once.** AMQP redelivers after a consumer crash or a
+  missed ack, so the `eventId` is inserted into `processed_event` in the same
+  transaction as the notifications it produced. A redelivery hits the primary key and
+  is acked without writing anything twice. The dedupe is the insert, not a prior
+  `SELECT`: two deliveries can be in flight at once, and a check-then-act would let
+  both pass before either committed.
+- **A message that cannot be processed is dead-lettered, never requeued in place.** A
+  poison message requeued to the same queue is redelivered immediately and forever,
+  which takes the consumer down with it.
+
+### What producing an event costs the producer
+
+Nothing it cannot afford. Publishing is best-effort and happens *after* the business
+transaction commits, so a broker that is down cannot roll back a request that was
+genuinely joined — the failure is logged and the notification is lost. Two details make
+that safe rather than merely stated:
+
+- **The dial is bounded.** `amqp.Dial` defaults to a 30-second timeout, and a stopped
+  broker on a Docker network blackholes the connection rather than refusing it. Left
+  alone, that turned every request-creating call into a 16-second wait for a broker
+  nobody was waiting on. The dial is capped at 700ms and the whole publish at 2s.
+- **A publish is retried once.** The first publish after a broker restart is expected
+  to fail: the cached connection looks alive until it is used. Without the retry, every
+  broker blip silently costs one notification — the failure is discovered by the
+  publish that should have carried it.
+
+Closing the remaining gap — an event lost because the broker was down when it was
+produced — needs a transactional outbox in each producer, the same machinery that would
+close the dual-write window in Admin/Contact's `Decide`. It is deliberately not built.
 
 ## Running Locally
 
-The root compose file runs the whole system — seven services and their seven databases —
+The root compose file runs the whole system — seven services, their seven databases and a broker —
 on one network, with the shared secrets pinned in one place:
 
 ```bash
@@ -425,9 +464,11 @@ classes.
 
 ## Documentation
 
-- `docs/` — the full technical specification (business rules, service boundaries,
-  interaction flows).
-- `postman/marketplace.postman_collection.json` — 107 requests covering every service,
+- `docs/technical-specification.pdf` — the full specification (business rules, service
+  boundaries, interaction flows).
+- `docs/events.md` — the AMQP contract: topology, envelope, delivery guarantees, and
+  which service produces which event.
+- `postman/marketplace.postman_collection.json` — 108 requests covering every service,
   the internal APIs, negative cases and health. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is

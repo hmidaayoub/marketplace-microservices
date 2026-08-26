@@ -108,6 +108,14 @@
     {
       "key": "customer2UserId",
       "value": ""
+    },
+    {
+      "key": "notifBaseline",
+      "value": "0"
+    },
+    {
+      "key": "unreadBaseline",
+      "value": "0"
     }
   ],
   "item": [
@@ -2146,6 +2154,43 @@
       "description": "Spec sections 13 and 18. Producers post to /internal/notifications; the recipient reads their own inbox. The customer is generated per run, so their inbox starts empty and the counts below are deterministic.",
       "item": [
         {
+          "name": "Inbox baseline",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{notificationUrl}}/api/notifications/me?limit=50",
+            "description": "Records what is already in the inbox before this folder adds anything.\n\nEarlier folders now produce real notifications: creating and joining a request emits REQUEST_JOINED over AMQP. Asserting absolute counts here would couple this folder to how many events the rest of the collection happens to generate, so everything below is asserted as a delta from this point."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"notifBaseline\", b.length);",
+                  "// Unread is everything not READ and not FAILED - see the service's unread rule.",
+                  "pm.collectionVariables.set(\"unreadBaseline\",",
+                  "    b.filter(n => n.status !== \"READ\" && n.status !== \"FAILED\").length);",
+                  "",
+                  "// Proof that the event pipeline works end to end, not just the HTTP API:",
+                  "// nothing in this collection posted this one. It was published to RabbitMQ by",
+                  "// request-service when folder 5 created the request, and consumed here.",
+                  "// Folders 6-8 run in between, so it has had seconds to arrive.",
+                  "pm.test(\"REQUEST_JOINED arrived over AMQP, unprompted\", () =>",
+                  "    pm.expect(b.map(n => n.type)).to.include(\"REQUEST_JOINED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Internal: REQUEST_JOINED to the customer",
           "request": {
             "method": "POST",
@@ -2368,7 +2413,7 @@
                 "exec": [
                   "pm.test(\"ok\", () => pm.response.to.have.status(200));",
                   "const b = pm.response.json();",
-                  "pm.test(\"the three addressed to this customer\", () => pm.expect(b.length).to.eql(3));",
+                  "pm.test(\"this folder added three\", () => pm.expect(b.length).to.eql(\n    Number(pm.collectionVariables.get(\"notifBaseline\")) + 3));",
                   "pm.test(\"newest first\", () => pm.expect(b[0].type).to.eql(\"REQUEST_CLOSED\"));",
                   "pm.test(\"all belong to the caller\", () =>",
                   "    b.forEach(n => pm.expect(n.userId).to.eql(pm.collectionVariables.get(\"userId\"))));"
@@ -2397,7 +2442,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"ok\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"all three unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(3));"
+                  "pm.test(\"all three are unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(\n    Number(pm.collectionVariables.get(\"unreadBaseline\")) + 3));"
                 ]
               }
             }
@@ -2448,7 +2493,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"one fewer unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(2));"
+                  "pm.test(\"one fewer unread\", () => pm.expect(pm.response.json().unreadCount).to.eql(\n    Number(pm.collectionVariables.get(\"unreadBaseline\")) + 2));"
                 ]
               }
             }
@@ -2500,7 +2545,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"ok\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"two unread\", () => pm.expect(pm.response.json().length).to.eql(2));"
+                  "pm.test(\"one fewer unread\", () => pm.expect(pm.response.json().length).to.eql(\n    Number(pm.collectionVariables.get(\"unreadBaseline\")) + 2));"
                 ]
               }
             }

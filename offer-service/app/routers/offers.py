@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import service
 from app.db import get_session
+from app.events import KEY_OFFER_CREATED
 from app.models import Offer
 from app.schemas import CompetingOfferOut, OfferCreate, OfferOut, OfferUpdate
 from app.security import (
@@ -44,7 +45,38 @@ async def submit_offer(
         raise RequestNotAcceptingOffers(purchase_request.status)
 
     offer = await service.create_offer(session, seller_id, payload)
+
+    # Flow 2, step 7. After the offer is stored, and unable to undo it: a broker or an
+    # admin lookup failing here leaves a perfectly good offer that nobody was told about.
+    await _notify_admins(request, offer)
+
     return OfferOut.of(offer).model_dump(by_alias=True, mode="json")
+
+
+async def _notify_admins(request: Request, offer: Offer) -> None:
+    """Emits NEW_OFFER to every admin.
+
+    Section 18 addresses this event to "Admin" rather than to one person, so the
+    recipient list is built here: notification-service is addressed by userId and never
+    resolves an identity of its own. An empty list - auth-service unreachable, or no
+    admin account - simply publishes nothing.
+    """
+    admin_ids = await _clients(request).admin_user_ids()
+    await request.app.state.publisher.publish_or_log(
+        KEY_OFFER_CREATED,
+        [
+            {
+                "userId": str(admin_id),
+                "type": "NEW_OFFER",
+                "title": "An offer is waiting for review",
+                "message": (
+                    f"A seller offered {offer.available_quantity} at "
+                    f"{offer.price_per_unit} {offer.currency} per unit."
+                ),
+            }
+            for admin_id in admin_ids
+        ],
+    )
 
 
 @router.get("/me", response_model=None)

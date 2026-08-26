@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     seller_service_url: str = Field(default="http://localhost:8083", alias="SELLER_SERVICE_URL")
     request_service_url: str = Field(default="http://localhost:8084", alias="REQUEST_SERVICE_URL")
+    # Only used to ask who the admins are, so a NEW_OFFER event can be addressed.
+    auth_service_url: str = Field(default="http://localhost:8081", alias="AUTH_SERVICE_URL")
+
+    # The broker notification events are published to. Unlike the secrets above it has a
+    # working default: a missing broker costs a notification, not safety.
+    rabbitmq_url: str = Field(default="amqp://guest:guest@localhost:5672/", alias="RABBITMQ_URL")
 
     http_timeout_seconds: float = 5.0
 

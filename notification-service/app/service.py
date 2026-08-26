@@ -13,12 +13,17 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Channel, Notification, NotificationStatus
-from app.schemas import NotificationCreate
+from app.models import Channel, Notification, NotificationStatus, ProcessedEvent
+from app.schemas import EventEnvelope, NotificationCreate
 
 log = logging.getLogger(__name__)
+
+
+class DuplicateEvent(Exception):
+    """The event has already been handled. Not a failure - the message is acked."""
 
 
 class NotificationNotFound(Exception):
@@ -85,6 +90,33 @@ async def create_bulk(
     notifications = [_build(payload) for payload in payloads]
     session.add_all(notifications)
     await session.commit()
+    for notification in notifications:
+        await session.refresh(notification)
+    return notifications
+
+
+async def record_event(session: AsyncSession, envelope: EventEnvelope) -> Sequence[Notification]:
+    """Handles one AMQP event: the notifications it carries and the record that it was
+    handled, in a single transaction.
+
+    The dedupe is the insert itself, not a prior SELECT. Two deliveries of the same
+    event can be in flight at once - a redelivery racing the original after a missed
+    ack - and a check-then-act would let both pass before either committed. Letting the
+    primary key decide means the loser is told so by the database.
+
+    Everything below this point is the same code the HTTP internal API runs, so the two
+    entry points cannot drift.
+    """
+    notifications = [_build(payload) for payload in envelope.notifications]
+    session.add_all(notifications)
+    session.add(ProcessedEvent(event_id=envelope.event_id, source=envelope.source))
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise DuplicateEvent from exc
+
     for notification in notifications:
         await session.refresh(notification)
     return notifications

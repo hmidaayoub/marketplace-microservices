@@ -478,4 +478,77 @@ class AuthControllerIntegrationTest extends AbstractIntegrationTest {
 
         return objectMapper.readTree(response).get("userId").asText();
     }
+
+    // --- listing users by role (backs NEW_OFFER, spec section 18) ---------------------
+
+    @Test
+    void internalUsersByRole_shouldReturnTheSeededAdmin_withoutPhoneNumber() throws Exception {
+        mockMvc.perform(get("/internal/users/by-role/ADMIN")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].role").value("ADMIN"))
+            .andExpect(jsonPath("$[0].userId").exists())
+            // Same projection as the single-user internal read: still no phone number,
+            // whatever the caller intends to do with the list.
+            .andExpect(jsonPath("$[0].phoneNumber").doesNotExist());
+    }
+
+    @Test
+    void internalUsersByRole_shouldReturnRegisteredCustomers() throws Exception {
+        RegisterRequest reg = new RegisterRequest();
+        reg.setEmail("byrole@test.com");
+        reg.setPassword("password123");
+        reg.setPhoneNumber("+8888888881");
+
+        mockMvc.perform(post("/api/auth/register/customer")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(reg)))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/internal/users/by-role/CUSTOMER")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].email").value("byrole@test.com"));
+    }
+
+    @Test
+    void internalUsersByRole_shouldExcludeBlockedAccounts() throws Exception {
+        RegisterRequest reg = new RegisterRequest();
+        reg.setEmail("blocked@test.com");
+        reg.setPassword("password123");
+        reg.setPhoneNumber("+8888888882");
+
+        String response = mockMvc.perform(post("/api/auth/register/customer")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(reg)))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString();
+
+        java.util.UUID userId =
+            java.util.UUID.fromString(objectMapper.readTree(response).get("userId").asText());
+        com.marketplace.auth.domain.User user = userRepository.findById(userId).orElseThrow();
+        user.setStatus(com.marketplace.auth.domain.UserStatus.BLOCKED);
+        userRepository.save(user);
+
+        // A blocked account is not someone to route work to.
+        mockMvc.perform(get("/internal/users/by-role/CUSTOMER")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void internalUsersByRole_shouldRequireTheInternalKey() throws Exception {
+        mockMvc.perform(get("/internal/users/by-role/ADMIN"))
+            .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void internalUsersByRole_shouldReject_unknownRole() throws Exception {
+        mockMvc.perform(get("/internal/users/by-role/WIZARD")
+                .header(INTERNAL_API_KEY_HEADER, internalApiKey))
+            .andExpect(status().isBadRequest());
+    }
 }

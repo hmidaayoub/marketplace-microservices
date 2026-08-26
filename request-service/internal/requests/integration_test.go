@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/auth"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/db"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/middleware"
 )
 
@@ -95,9 +97,36 @@ func TestMain(m *testing.M) {
 
 // --- harness ---------------------------------------------------------------------
 
+// recordingNotifier stands in for the broker. The tests assert on what would have been
+// published rather than starting a RabbitMQ, which keeps the suite fast; the AMQP path
+// itself is exercised end-to-end against a real broker in the running stack.
+type recordingNotifier struct {
+	mu        sync.Mutex
+	published []publishedEvent
+}
+
+type publishedEvent struct {
+	routingKey    string
+	notifications []events.Notification
+}
+
+func (n *recordingNotifier) PublishOrLog(_ context.Context, routingKey string, ns ...events.Notification) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.published = append(n.published, publishedEvent{routingKey: routingKey, notifications: ns})
+}
+
+func (n *recordingNotifier) events() []publishedEvent {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]publishedEvent(nil), n.published...)
+}
+
 type harness struct {
 	t      *testing.T
 	router http.Handler
+
+	notifier *recordingNotifier
 
 	// userID -> customerID, as customer-service would resolve it.
 	profiles map[uuid.UUID]uuid.UUID
@@ -113,7 +142,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("cleaning tables: %v", err)
 	}
 
-	h := &harness{t: t, profiles: map[uuid.UUID]uuid.UUID{}}
+	h := &harness{t: t, profiles: map[uuid.UUID]uuid.UUID{}, notifier: &recordingNotifier{}}
 
 	// Stands in for customer-service's /internal/customers/by-user/{userId}.
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +168,7 @@ func newHarness(t *testing.T) *harness {
 		Handler: NewHandler(
 			NewService(testPool),
 			newCustomerClient(stub.URL),
+			h.notifier,
 		),
 		Verifier:       auth.NewVerifier([]byte(testSecret)),
 		InternalAPIKey: testInternalAPIKey,

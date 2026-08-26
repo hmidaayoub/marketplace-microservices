@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -11,8 +12,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/httpx"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/middleware"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/store"
 )
 
 const (
@@ -26,13 +29,20 @@ type customerResolver interface {
 	ResolveCustomerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
 }
 
+// notifier is the part of the event publisher the handlers need. Narrowing it keeps
+// the tests free of a broker: they assert on what would have been published.
+type notifier interface {
+	PublishOrLog(ctx context.Context, routingKey string, notifications ...events.Notification)
+}
+
 type Handler struct {
 	service   *Service
 	customers customerResolver
+	events    notifier
 }
 
-func NewHandler(service *Service, customers customerResolver) *Handler {
-	return &Handler{service: service, customers: customers}
+func NewHandler(service *Service, customers customerResolver, publisher notifier) *Handler {
+	return &Handler{service: service, customers: customers, events: publisher}
 }
 
 // Create handles POST /api/requests.
@@ -61,6 +71,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+
+	// Flow 1, step 8. After the transaction, and never able to fail it: the request
+	// exists whether or not the customer is told about it.
+	h.notifyParticipant(r, created, "Your request is open",
+		fmt.Sprintf("Your request for %s is open. You are its first participant, wanting %d.",
+			created.ItemName, body.Quantity))
 
 	httpx.JSON(w, http.StatusCreated, toResponse(created))
 }
@@ -155,6 +171,10 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+
+	h.notifyParticipant(r, updated, "You joined a request",
+		fmt.Sprintf("You joined the request for %s, wanting %d. It now has %d customers wanting %d in total.",
+			updated.ItemName, body.Quantity, updated.TotalCustomers, updated.TotalQuantity))
 
 	httpx.JSON(w, http.StatusCreated, toResponse(updated))
 }
@@ -273,6 +293,27 @@ func (h *Handler) callerCustomerID(w http.ResponseWriter, r *http.Request) (uuid
 		httpx.Error(w, http.StatusServiceUnavailable, "customer-service is unavailable")
 	}
 	return uuid.Nil, false
+}
+
+// notifyParticipant emits REQUEST_JOINED to the customer who acted.
+//
+// The recipient is the token subject, not the customerId the request records:
+// notification-service is addressed by global userId and never resolves an identity,
+// so the producer supplies the one it already holds.
+func (h *Handler) notifyParticipant(r *http.Request, request store.PurchaseRequest, title, message string) {
+	if h.events == nil {
+		return
+	}
+	claims, ok := middleware.ClaimsFrom(r.Context())
+	if !ok {
+		return
+	}
+	h.events.PublishOrLog(r.Context(), events.KeyRequestJoined, events.Notification{
+		UserID:  claims.UserID,
+		Type:    "REQUEST_JOINED",
+		Title:   title,
+		Message: message,
+	})
 }
 
 // fail maps a domain error to its status. Anything unrecognised is a real fault: it is

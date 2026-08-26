@@ -10,6 +10,7 @@
 x-secrets: &secrets
   JWT_SECRET: dev-secret-key-change-in-production-min-256-bits
   INTERNAL_API_KEY: dev-internal-api-key-change-in-production
+  RABBITMQ_URL: amqp://marketplace:marketplace@rabbitmq:5672/
 
 x-db-healthcheck: &db-healthcheck
   test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -18,6 +19,23 @@ x-db-healthcheck: &db-healthcheck
   retries: 10
 
 services:
+  # Notification events travel over AMQP rather than a direct HTTP call, so a producer
+  # never waits on notification-service and a notification is not lost when it is down.
+  # The topology itself is declared by the services, not here.
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: marketplace
+      RABBITMQ_DEFAULT_PASS: marketplace
+    ports: ["5672:5672", "15672:15672"]
+    volumes: [rabbitmq_data:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
   auth-db:
     image: postgres:15-alpine
     environment:
@@ -171,6 +189,7 @@ services:
     depends_on:
       request-db: {condition: service_healthy}
       customer-service: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health"]
       interval: 10s
@@ -193,10 +212,12 @@ services:
       DB_PASSWORD: postgres
       SELLER_SERVICE_URL: http://seller-service:8083
       REQUEST_SERVICE_URL: http://request-service:8084
+      AUTH_SERVICE_URL: http://auth-service:8081
     depends_on:
       offer-db: {condition: service_healthy}
       seller-service: {condition: service_healthy}
       request-service: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
 
   # The second Go service, and the most connected one: deciding an offer touches
   # offer-service and request-service, and answering a seller's contact lookup walks
@@ -224,6 +245,7 @@ services:
       seller-service: {condition: service_healthy}
       request-service: {condition: service_healthy}
       offer-service: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8086/actuator/health"]
       interval: 10s
@@ -248,6 +270,7 @@ services:
       DB_PASSWORD: postgres
     depends_on:
       notification-db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
 
 volumes:
   auth_db_data:
@@ -257,3 +280,4 @@ volumes:
   offer_db_data:
   admin_db_data:
   notification_db_data:
+  rabbitmq_data:

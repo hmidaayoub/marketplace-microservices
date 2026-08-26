@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "pyjwt>=2.10",
+    "aio-pika>=10.0.1",
 ]
 
 [dependency-groups]

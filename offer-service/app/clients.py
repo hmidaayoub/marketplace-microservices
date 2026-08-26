@@ -35,15 +35,48 @@ class ServiceClients:
     """Wraps seller-service and request-service. One httpx client is shared for the
     process so connections are pooled rather than re-established per request."""
 
-    def __init__(self, seller_base_url: str, request_base_url: str, api_key: str, timeout: float):
+    def __init__(
+        self,
+        seller_base_url: str,
+        request_base_url: str,
+        auth_base_url: str,
+        api_key: str,
+        timeout: float,
+    ):
         self._seller_base_url = seller_base_url.rstrip("/")
         self._request_base_url = request_base_url.rstrip("/")
+        self._auth_base_url = auth_base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             timeout=timeout, headers={INTERNAL_API_KEY_HEADER: api_key}
         )
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    async def admin_user_ids(self) -> list[uuid.UUID]:
+        """Every ACTIVE admin, as userIds.
+
+        Spec section 18 addresses NEW_OFFER to "Admin" rather than to one person, and
+        roles live in auth-service. Notification-service is addressed by userId and
+        never resolves an identity, so the producer has to build the recipient list.
+
+        Returns an empty list rather than raising when auth-service is unreachable:
+        this is only ever called to address a best-effort notification, and failing to
+        find the admins must not fail the offer that was already stored.
+        """
+        url = f"{self._auth_base_url}/internal/users/by-role/ADMIN"
+        try:
+            response = await self._client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.error("cannot list admins to notify: %s", exc)
+            return []
+
+        try:
+            return [uuid.UUID(user["userId"]) for user in response.json()]
+        except (ValueError, KeyError, TypeError) as exc:
+            log.error("unexpected admin listing from auth-service: %s", exc)
+            return []
 
     async def resolve_seller_id(self, user_id: uuid.UUID) -> uuid.UUID:
         """Turn the token's userId into the sellerId an offer is recorded against.

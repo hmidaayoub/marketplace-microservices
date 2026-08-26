@@ -18,6 +18,7 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/config"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/db"
+	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 )
 
 func main() {
@@ -62,13 +63,18 @@ func run() error {
 	// lookup fans out to two services per granted customer.
 	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 
+	// The connection is opened on the first publish, not here: the service must start
+	// whether or not the broker is up, and reconnect on its own if it restarts.
+	publisher := events.NewPublisher(cfg.RabbitMQURL, "admin-service")
+	defer func() { _ = publisher.Close() }()
+
 	handler := admin.NewHandler(admin.NewService(pool, admin.Deps{
 		Offers:    clients.NewOffer(cfg.OfferServiceURL, cfg.InternalAPIKey, httpClient),
 		Requests:  clients.NewRequest(cfg.RequestServiceURL, cfg.InternalAPIKey, httpClient),
 		Sellers:   clients.NewSeller(cfg.SellerServiceURL, cfg.InternalAPIKey, httpClient),
 		Customers: clients.NewCustomer(cfg.CustomerServiceURL, cfg.InternalAPIKey, httpClient),
 		Auth:      clients.NewAuth(cfg.AuthServiceURL, cfg.InternalAPIKey, httpClient),
-	}))
+	}), publisher)
 
 	router := admin.NewRouter(admin.RouterConfig{
 		Handler:        handler,

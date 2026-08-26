@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/auth"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/events"
 )
 
 // --- creating (R1, R3, R4) --------------------------------------------------------
@@ -535,4 +536,97 @@ func containsAny(haystack string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+// --- notification events (spec flow 1 step 8, docs/events.md) -------------------------
+
+func TestCreatingARequestEmitsRequestJoinedToTheCreator(t *testing.T) {
+	h := newHarness(t)
+	userID, token := h.newCustomer()
+
+	h.createRequest(token, "Espresso Machine", 3)
+
+	published := h.notifier.events()
+	if len(published) != 1 {
+		t.Fatalf("published %d events, want 1: %+v", len(published), published)
+	}
+	if published[0].routingKey != events.KeyRequestJoined {
+		t.Errorf("routing key = %q, want %q", published[0].routingKey, events.KeyRequestJoined)
+	}
+
+	notifications := published[0].notifications
+	if len(notifications) != 1 {
+		t.Fatalf("carried %d notifications, want 1", len(notifications))
+	}
+	// Addressed by the token subject, not the customerId the request records:
+	// notification-service never resolves an identity.
+	if notifications[0].UserID != userID {
+		t.Errorf("recipient = %s, want the token subject %s", notifications[0].UserID, userID)
+	}
+	if notifications[0].Type != "REQUEST_JOINED" {
+		t.Errorf("type = %q, want REQUEST_JOINED", notifications[0].Type)
+	}
+	if !strings.Contains(notifications[0].Message, "Espresso Machine") {
+		t.Errorf("message does not name the item: %q", notifications[0].Message)
+	}
+}
+
+func TestJoiningARequestEmitsRequestJoinedToTheJoiner(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	joinerID, joiner := h.newCustomer()
+
+	requestID := h.createRequest(creator, "Espresso Machine", 3)
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`); res.code != http.StatusCreated {
+		t.Fatalf("join: status %d body %s", res.code, res.raw)
+	}
+
+	published := h.notifier.events()
+	if len(published) != 2 {
+		t.Fatalf("published %d events, want 2 (create then join)", len(published))
+	}
+
+	joined := published[1].notifications[0]
+	if joined.UserID != joinerID {
+		t.Errorf("recipient = %s, want the joiner %s", joined.UserID, joinerID)
+	}
+	// The joiner is told the demand they just became part of.
+	if !strings.Contains(joined.Message, "2 customers") || !strings.Contains(joined.Message, "8 in total") {
+		t.Errorf("message does not carry the recomputed demand: %q", joined.Message)
+	}
+}
+
+// The event must never be able to fail the operation that produced it - a request that
+// was genuinely joined stays joined whether or not the message went out.
+func TestAFailedJoinEmitsNothing(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	_, joiner := h.newCustomer()
+
+	requestID := h.createRequest(creator, "Espresso Machine", 3)
+	before := len(h.notifier.events())
+
+	// A second join by the same customer is a 409.
+	h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", creator, `{"quantity":1}`)
+	// An unknown request is a 404.
+	h.do(http.MethodPost, "/api/requests/"+uuid.New().String()+"/participants", joiner, `{"quantity":1}`)
+
+	if after := len(h.notifier.events()); after != before {
+		t.Errorf("failed operations published %d events, want none", after-before)
+	}
+}
+
+func TestReadsAndLeavesEmitNothing(t *testing.T) {
+	h := newHarness(t)
+	_, token := h.newCustomer()
+	requestID := h.createRequest(token, "Espresso Machine", 3)
+	before := len(h.notifier.events())
+
+	h.do(http.MethodGet, "/api/requests", token, "")
+	h.do(http.MethodGet, "/api/requests/"+requestID, token, "")
+	h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", token, "")
+
+	if after := len(h.notifier.events()); after != before {
+		t.Errorf("published %d unexpected events", after-before)
+	}
 }

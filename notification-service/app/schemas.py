@@ -52,6 +52,22 @@ class NotificationBulkCreate(BaseModel):
     notifications: list[NotificationCreate] = Field(min_length=1, max_length=MAX_BULK)
 
 
+class EventEnvelope(BaseModel):
+    """One AMQP message (see docs/events.md).
+
+    extra="forbid" here as well as on the payloads: a producer that adds a field the
+    consumer does not understand should be a loud dead-letter, not a value silently
+    dropped on the floor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: uuid.UUID = Field(alias="eventId")
+    occurred_at: datetime | None = Field(default=None, alias="occurredAt")
+    source: str = Field(min_length=1, max_length=64)
+    notifications: list[NotificationCreate] = Field(min_length=1, max_length=MAX_BULK)
+
+
 class NotificationOut(BaseModel):
     notification_id: uuid.UUID = Field(serialization_alias="notificationId")
     user_id: uuid.UUID = Field(serialization_alias="userId")
@@ -90,6 +106,7 @@ class BulkResultOut(BaseModel):
 __all__ = [
     "MAX_BULK",
     "BulkResultOut",
+    "EventEnvelope",
     "NotificationBulkCreate",
     "NotificationCreate",
     "NotificationOut",

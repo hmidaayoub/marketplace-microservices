@@ -16,6 +16,7 @@ type Config struct {
 	JWTSecret          []byte
 	InternalAPIKey     string
 	CustomerServiceURL string
+	RabbitMQURL        string
 	HTTPTimeout        time.Duration
 	ShutdownTimeout    time.Duration
 }
@@ -27,8 +28,11 @@ func Load() (Config, error) {
 	cfg := Config{
 		Port:               env("SERVER_PORT", "8084"),
 		CustomerServiceURL: strings.TrimRight(env("CUSTOMER_SERVICE_URL", "http://localhost:8082"), "/"),
-		HTTPTimeout:        5 * time.Second,
-		ShutdownTimeout:    15 * time.Second,
+		// Unlike the two secrets below this has a working default: a missing broker
+		// costs a notification, not safety, so it must not stop the service starting.
+		RabbitMQURL:     env("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		HTTPTimeout:     5 * time.Second,
+		ShutdownTimeout: 15 * time.Second,
 	}
 
 	secret := os.Getenv("JWT_SECRET")

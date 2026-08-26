@@ -22,6 +22,7 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/auth"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/db"
+	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/middleware"
 )
 
@@ -121,10 +122,44 @@ type platform struct {
 	phoneCalls int
 }
 
+// recordingNotifier stands in for the broker. The tests assert on what would have been
+// published rather than starting a RabbitMQ, which keeps the suite fast; the AMQP path
+// itself is exercised end-to-end against a real broker in the running stack.
+type recordingNotifier struct {
+	mu        sync.Mutex
+	published []publishedEvent
+}
+
+type publishedEvent struct {
+	routingKey    string
+	notifications []events.Notification
+}
+
+func (n *recordingNotifier) PublishOrLog(_ context.Context, routingKey string, ns ...events.Notification) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.published = append(n.published, publishedEvent{routingKey: routingKey, notifications: ns})
+}
+
+func (n *recordingNotifier) events() []publishedEvent {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]publishedEvent(nil), n.published...)
+}
+
+func (n *recordingNotifier) keys() []string {
+	out := []string{}
+	for _, e := range n.events() {
+		out = append(out, e.routingKey)
+	}
+	return out
+}
+
 type harness struct {
-	t      *testing.T
-	router http.Handler
-	p      *platform
+	t        *testing.T
+	router   http.Handler
+	p        *platform
+	notifier *recordingNotifier
 }
 
 func newHarness(t *testing.T) *harness {
@@ -157,11 +192,14 @@ func newHarness(t *testing.T) *harness {
 		Auth:      clients.NewAuth(stub.URL, testInternalAPIKey, httpClient),
 	})
 
+	notifier := &recordingNotifier{}
+
 	return &harness{
-		t: t,
-		p: p,
+		t:        t,
+		p:        p,
+		notifier: notifier,
 		router: NewRouter(RouterConfig{
-			Handler:        NewHandler(service),
+			Handler:        NewHandler(service, notifier),
 			Verifier:       auth.NewVerifier([]byte(testSecret)),
 			InternalAPIKey: testInternalAPIKey,
 			Ready:          func() error { return nil },
@@ -249,6 +287,21 @@ func (p *platform) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(http.StatusOK, map[string]any{"requestId": id, "customerIds": customerIDs})
+
+	case strings.HasPrefix(path, "/internal/sellers/") && !strings.Contains(path, "/by-user/"):
+		p.keys["seller"] = r.Header.Get(middleware.InternalAPIKeyHeader)
+		id, err := uuid.Parse(strings.TrimPrefix(path, "/internal/sellers/"))
+		if err != nil {
+			writeJSON(http.StatusBadRequest, nil)
+			return
+		}
+		for userID, sellerID := range p.sellerOf {
+			if sellerID == id {
+				writeJSON(http.StatusOK, map[string]any{"sellerId": id, "userId": userID})
+				return
+			}
+		}
+		writeJSON(http.StatusNotFound, nil)
 
 	case strings.HasPrefix(path, "/internal/sellers/by-user/"):
 		p.keys["seller"] = r.Header.Get(middleware.InternalAPIKeyHeader)

@@ -45,6 +45,7 @@ def configure_environment(database_url: str) -> Iterator[None]:
     # Pointed at a stub in-process; no real seller-service or request-service is started.
     os.environ["SELLER_SERVICE_URL"] = "http://seller.test"
     os.environ["REQUEST_SERVICE_URL"] = "http://request.test"
+    os.environ["AUTH_SERVICE_URL"] = "http://auth.test"
 
     from app.config import get_settings
 
@@ -70,7 +71,11 @@ class FakeUpstream:
     def __init__(self) -> None:
         self.sellers: dict[uuid.UUID, uuid.UUID] = {}
         self.requests: dict[uuid.UUID, str] = {}
+        self.admins: list[uuid.UUID] = []
         self.seen_api_keys: list[str | None] = []
+
+    def add_admin(self, user_id: uuid.UUID) -> None:
+        self.admins.append(user_id)
 
     def add_seller(self, user_id: uuid.UUID, seller_id: uuid.UUID) -> None:
         self.sellers[user_id] = seller_id
@@ -91,6 +96,11 @@ class FakeUpstream:
                 return httpx.Response(404, json={"message": "not found", "status": 404})
             return httpx.Response(200, json={"sellerId": str(seller_id), "userId": raw})
 
+        if path == "/internal/users/by-role/ADMIN":
+            return httpx.Response(
+                200, json=[{"userId": str(a), "role": "ADMIN"} for a in self.admins]
+            )
+
         if path.startswith("/internal/requests/"):
             raw = path.rsplit("/", 1)[-1]
             status = self.requests.get(uuid.UUID(raw))
@@ -109,13 +119,39 @@ class FakeUpstream:
         return httpx.Response(500, json={"message": "unexpected call", "status": 500})
 
 
+class RecordingPublisher:
+    """Stands in for the broker: the tests assert on what would have been published.
+    The AMQP path itself is exercised end-to-end against a real RabbitMQ in the stack."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, list[dict]]] = []
+
+    async def publish_or_log(self, routing_key: str, notifications: list[dict]) -> None:
+        # Mirrors the real Publisher, which returns early rather than sending an event
+        # with no recipients. A double that is more permissive than the thing it stands
+        # in for hides exactly the behaviour the tests are meant to pin down.
+        if not notifications:
+            return
+        self.published.append((routing_key, notifications))
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.fixture
+async def publisher() -> RecordingPublisher:
+    return RecordingPublisher()
+
+
 @pytest.fixture
 async def upstream() -> FakeUpstream:
     return FakeUpstream()
 
 
 @pytest.fixture
-async def client(migrated: None, upstream: FakeUpstream) -> AsyncIterator[AsyncClient]:
+async def client(
+    migrated: None, upstream: FakeUpstream, publisher: RecordingPublisher
+) -> AsyncIterator[AsyncClient]:
     import httpx
     from sqlalchemy import text
 
@@ -133,6 +169,7 @@ async def client(migrated: None, upstream: FakeUpstream) -> AsyncIterator[AsyncC
             transport=httpx.MockTransport(upstream.handler),
             headers={"X-Internal-Api-Key": TEST_INTERNAL_KEY},
         )
+        app.state.publisher = publisher
         async with get_engine().begin() as connection:
             await connection.execute(text("TRUNCATE offer"))
         yield http_client

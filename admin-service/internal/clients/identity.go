@@ -37,6 +37,24 @@ func (c *SellerClient) ResolveSellerID(ctx context.Context, userID uuid.UUID) (u
 	return out.SellerID, nil
 }
 
+// ResolveUserID maps a sellerId back to the global userId.
+//
+// The mirror of ResolveSellerID, needed because notification-service is addressed by
+// userId and never resolves an identity itself: this service holds a sellerId on the
+// offer it just decided, so it is the one that has to make the hop.
+func (c *SellerClient) ResolveUserID(ctx context.Context, sellerID uuid.UUID) (uuid.UUID, error) {
+	var out struct {
+		UserID uuid.UUID `json:"userId"`
+	}
+	if err := c.t.do(ctx, http.MethodGet, "/internal/sellers/"+sellerID.String(), nil, &out); err != nil {
+		return uuid.Nil, err
+	}
+	if out.UserID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("%w: seller-service: response had no userId", ErrUnavailable)
+	}
+	return out.UserID, nil
+}
+
 type CustomerClient struct{ t transport }
 
 func NewCustomer(baseURL, apiKey string, httpClient *http.Client) *CustomerClient {

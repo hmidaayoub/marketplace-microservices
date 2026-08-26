@@ -2,9 +2,13 @@ package admin
 
 import (
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 )
 
 // --- flow 3: the admin decides ------------------------------------------------------
@@ -517,5 +521,106 @@ func TestHealthReportsUp(t *testing.T) {
 		if res.code != http.StatusOK || res.body["status"] != "UP" {
 			t.Errorf("%s: status %d body %s", path, res.code, res.raw)
 		}
+	}
+}
+
+// --- notification events (spec flow 3 step 7, docs/events.md) -------------------------
+
+func TestApprovalEmitsBothTheOutcomeAndTheContactGrant(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	sellerUserID, sellerID, _ := h.newSeller()
+	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"), h.newCustomer("+21622222222"))
+
+	if res := h.approve(adminToken, offerID); res.code != http.StatusCreated {
+		t.Fatalf("approve: status %d body %s", res.code, res.raw)
+	}
+
+	// Two events, not one: R8 is precisely that approval and contact permission are
+	// separate facts, so they are separate messages.
+	want := []string{events.KeyOfferApproved, events.KeyContactAccessGranted}
+	if got := h.notifier.keys(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("routing keys = %v, want %v", got, want)
+	}
+
+	published := h.notifier.events()
+	for _, e := range published {
+		n := e.notifications[0]
+		// Addressed by userId: the service holds a sellerId and makes the hop itself,
+		// because notification-service never resolves an identity.
+		if n.UserID != sellerUserID {
+			t.Errorf("%s addressed to %s, want the seller's userId %s", e.routingKey, n.UserID, sellerUserID)
+		}
+	}
+	if published[0].notifications[0].Type != "OFFER_APPROVED" {
+		t.Errorf("type = %q, want OFFER_APPROVED", published[0].notifications[0].Type)
+	}
+	if published[1].notifications[0].Type != "CONTACT_ACCESS_GRANTED" {
+		t.Errorf("type = %q, want CONTACT_ACCESS_GRANTED", published[1].notifications[0].Type)
+	}
+	if !strings.Contains(published[1].notifications[0].Message, "2 customer") {
+		t.Errorf("grant message does not carry the count: %q", published[1].notifications[0].Message)
+	}
+	if !strings.Contains(published[0].notifications[0].Message, "looks good") {
+		t.Errorf("outcome message does not carry the admin's reason: %q", published[0].notifications[0].Message)
+	}
+}
+
+func TestRejectionEmitsOnlyTheOutcome(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	sellerUserID, sellerID, _ := h.newSeller()
+	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	res := h.do(http.MethodPost, "/api/admin/offers/"+offerID.String()+"/reject", adminToken,
+		`{"reason":"price too high"}`)
+	if res.code != http.StatusCreated {
+		t.Fatalf("reject: status %d body %s", res.code, res.raw)
+	}
+
+	// A rejection grants nothing, so there is no contact-access event to send.
+	if got := h.notifier.keys(); !reflect.DeepEqual(got, []string{events.KeyOfferRejected}) {
+		t.Fatalf("routing keys = %v, want just %q", got, events.KeyOfferRejected)
+	}
+	n := h.notifier.events()[0].notifications[0]
+	if n.UserID != sellerUserID || n.Type != "OFFER_REJECTED" {
+		t.Errorf("notification = %+v, want OFFER_REJECTED to %s", n, sellerUserID)
+	}
+}
+
+// The events must never be able to undo the decision that produced them.
+func TestAFailedDecisionEmitsNothing(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	// Already decided, unknown, and rolled back by a failing relay.
+	h.approve(adminToken, offerID)
+	before := len(h.notifier.events())
+
+	h.approve(adminToken, offerID)
+	h.approve(adminToken, uuid.New())
+
+	if after := len(h.notifier.events()); after != before {
+		t.Errorf("failed decisions published %d events, want none", after-before)
+	}
+}
+
+// A decision that committed must stand even when the seller cannot be addressed.
+func TestADecisionSurvivesAnUnaddressableSeller(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	offerID, _ := h.newOffer(uuid.New(), h.newCustomer("+21611111111")) // seller unknown to the stub
+
+	res := h.approve(adminToken, offerID)
+	if res.code != http.StatusCreated {
+		t.Fatalf("approve: status %d body %s", res.code, res.raw)
+	}
+	if got := countRows(t, "offer_decision"); got != 1 {
+		t.Errorf("offer_decision rows = %d, want the decision kept", got)
+	}
+	if got := h.notifier.keys(); len(got) != 0 {
+		t.Errorf("published %v, want nothing when the recipient cannot be resolved", got)
 	}
 }

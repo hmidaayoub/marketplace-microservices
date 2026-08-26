@@ -17,6 +17,7 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/config"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/db"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/requests"
 )
 
@@ -58,9 +59,15 @@ func run() error {
 		return err
 	}
 
+	// The connection is opened on the first publish, not here: the service must start
+	// whether or not the broker is up, and reconnect on its own if it restarts.
+	publisher := events.NewPublisher(cfg.RabbitMQURL, "request-service")
+	defer func() { _ = publisher.Close() }()
+
 	handler := requests.NewHandler(
 		requests.NewService(pool),
 		clients.NewCustomer(cfg.CustomerServiceURL, cfg.InternalAPIKey, &http.Client{Timeout: cfg.HTTPTimeout}),
+		publisher,
 	)
 
 	router := requests.NewRouter(requests.RouterConfig{

@@ -73,7 +73,7 @@ async def client(migrated: None) -> AsyncIterator[AsyncClient]:
         app.router.lifespan_context(app),
     ):
         async with get_engine().begin() as connection:
-            await connection.execute(text("TRUNCATE notification"))
+            await connection.execute(text("TRUNCATE notification, processed_event"))
         yield http_client
 
 

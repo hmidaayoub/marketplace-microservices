@@ -61,6 +61,25 @@ class NotificationType:
     )
 
 
+class ProcessedEvent(Base):
+    """The inbox side of at-least-once delivery.
+
+    AMQP redelivers whenever a consumer dies between handling a message and acking it,
+    so the same event legitimately arrives more than once. The eventId is inserted here
+    in the same transaction as the notifications it produced: a redelivery hits the
+    primary key, is recognised as already handled, and is acked without writing a
+    duplicate. Without this, every consumer restart would double someone's inbox.
+    """
+
+    __tablename__ = "processed_event"
+
+    event_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Notification(Base):
     __tablename__ = "notification"
 

@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(alias="JWT_SECRET")
     internal_api_key: str = Field(alias="INTERNAL_API_KEY")
 
+    # The broker this service consumes notification events from. Unlike the secrets
+    # above it has a working default: a missing broker degrades the service to its HTTP
+    # path rather than leaving it insecure, so it must not stop startup.
+    rabbitmq_url: str = Field(default="amqp://guest:guest@localhost:5672/", alias="RABBITMQ_URL")
+
     @computed_field
     @property
     def database_url(self) -> str:

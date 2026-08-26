@@ -11,12 +11,29 @@ from sqlalchemy import text
 from app.config import get_settings
 from app.db import dispose_engine, get_engine
 from app.errors import register_exception_handlers
+from app.events import Consumer
 from app.migrate import run_migrations
 from app.routers import internal, notifications
 
-logging.basicConfig(
-    level=logging.INFO, format='{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}'
-)
+
+def configure_logging() -> None:
+    """Installs the platform's log format on the root logger.
+
+    Called twice, and both are needed. force=True because uvicorn installs its own root
+    handler before importing this module, and basicConfig is a no-op when one is already
+    there. Called again after migrations because Alembic's fileConfig reconfigures the
+    root logger from alembic.ini - which sets it to WARNING - and would otherwise mute
+    every application log line for the rest of the process, the background consumer's
+    included.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format='{"level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
+        force=True,
+    )
+
+
+configure_logging()
 log = logging.getLogger(__name__)
 
 
@@ -26,13 +43,22 @@ async def lifespan(app: FastAPI):
 
     # Alembic is synchronous; run it off the event loop so startup does not block it.
     await asyncio.to_thread(run_migrations)
+    configure_logging()  # Alembic just reset the root logger; take it back.
 
     # No ServiceClients here, unlike every other service: this one is told who to
-    # notify and never has to ask.
+    # notify and never has to ask. The only connection it opens is to the broker.
+    #
+    # start() returns immediately and the consumer connects in the background, so a
+    # broker that is slow or down cannot stop this service from starting. The inbox is
+    # a plain database read and has no reason to be unavailable because messaging is.
+    app.state.consumer = Consumer(settings.rabbitmq_url)
+    app.state.consumer.start()
+
     log.info("notification-service listening on port %s", settings.server_port)
 
     yield
 
+    await app.state.consumer.stop()
     await dispose_engine()
 
 
