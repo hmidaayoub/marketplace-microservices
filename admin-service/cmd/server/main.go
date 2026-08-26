@@ -68,13 +68,19 @@ func run() error {
 	publisher := events.NewPublisher(cfg.RabbitMQURL, "admin-service")
 	defer func() { _ = publisher.Close() }()
 
+	// Nothing publishes inline. Events are written to the outbox inside the business
+	// transaction and this relay is the only thing that sends them, so a broker outage
+	// delays a notification instead of losing it.
+	relay := events.NewRelay(pool, publisher, "admin-service")
+	relay.Start(ctx)
+
 	handler := admin.NewHandler(admin.NewService(pool, admin.Deps{
 		Offers:    clients.NewOffer(cfg.OfferServiceURL, cfg.InternalAPIKey, httpClient),
 		Requests:  clients.NewRequest(cfg.RequestServiceURL, cfg.InternalAPIKey, httpClient),
 		Sellers:   clients.NewSeller(cfg.SellerServiceURL, cfg.InternalAPIKey, httpClient),
 		Customers: clients.NewCustomer(cfg.CustomerServiceURL, cfg.InternalAPIKey, httpClient),
 		Auth:      clients.NewAuth(cfg.AuthServiceURL, cfg.InternalAPIKey, httpClient),
-	}), publisher)
+	}, relay))
 
 	router := admin.NewRouter(admin.RouterConfig{
 		Handler:        handler,
@@ -110,5 +116,12 @@ func run() error {
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancelShutdown()
 
-	return server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+
+	// The relay stops with ctx; wait for its current batch so shutdown does not race a
+	// publish that is already in flight.
+	relay.Wait()
+	return nil
 }

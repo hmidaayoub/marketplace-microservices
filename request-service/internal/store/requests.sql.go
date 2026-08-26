@@ -38,19 +38,25 @@ func (q *Queries) AddParticipant(ctx context.Context, arg AddParticipantParams) 
 }
 
 const createRequest = `-- name: CreateRequest :one
-INSERT INTO purchase_request (item_name, description, category)
-VALUES ($1, $2, $3)
-RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at
+INSERT INTO purchase_request (item_name, description, category, created_by)
+VALUES ($1, $2, $3, $4)
+RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by
 `
 
 type CreateRequestParams struct {
 	ItemName    string
 	Description string
 	Category    string
+	CreatedBy   pgtype.UUID
 }
 
 func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (PurchaseRequest, error) {
-	row := q.db.QueryRow(ctx, createRequest, arg.ItemName, arg.Description, arg.Category)
+	row := q.db.QueryRow(ctx, createRequest,
+		arg.ItemName,
+		arg.Description,
+		arg.Category,
+		arg.CreatedBy,
+	)
 	var i PurchaseRequest
 	err := row.Scan(
 		&i.RequestID,
@@ -62,6 +68,7 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (P
 		&i.TotalQuantity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -108,7 +115,7 @@ func (q *Queries) GetParticipant(ctx context.Context, arg GetParticipantParams) 
 }
 
 const getRequest = `-- name: GetRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
 WHERE request_id = $1
 `
 
@@ -125,6 +132,7 @@ func (q *Queries) GetRequest(ctx context.Context, requestID uuid.UUID) (Purchase
 		&i.TotalQuantity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -156,7 +164,7 @@ func (q *Queries) ListParticipantCustomerIDs(ctx context.Context, requestID uuid
 }
 
 const listRequests = `-- name: ListRequests :many
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
 WHERE ($1::text IS NULL
        OR item_name ILIKE '%' || $1::text || '%')
   AND ($2::text IS NULL
@@ -200,6 +208,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 			&i.TotalQuantity,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -212,7 +221,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 }
 
 const listRequestsByCustomer = `-- name: ListRequestsByCustomer :many
-SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at FROM purchase_request pr
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by FROM purchase_request pr
 JOIN request_participant rp ON rp.request_id = pr.request_id
 WHERE rp.customer_id = $1
 ORDER BY rp.joined_at DESC
@@ -237,6 +246,7 @@ func (q *Queries) ListRequestsByCustomer(ctx context.Context, customerID uuid.UU
 			&i.TotalQuantity,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -249,7 +259,7 @@ func (q *Queries) ListRequestsByCustomer(ctx context.Context, customerID uuid.UU
 }
 
 const lockRequest = `-- name: LockRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
 WHERE request_id = $1
 FOR UPDATE
 `
@@ -269,6 +279,7 @@ func (q *Queries) LockRequest(ctx context.Context, requestID uuid.UUID) (Purchas
 		&i.TotalQuantity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -285,7 +296,7 @@ FROM (
     WHERE request_id = $1
 ) d
 WHERE pr.request_id = $1
-RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at
+RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by
 `
 
 // R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
@@ -303,6 +314,39 @@ func (q *Queries) RecalculateDemand(ctx context.Context, requestID uuid.UUID) (P
 		&i.TotalQuantity,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreatedBy,
+	)
+	return i, err
+}
+
+const setRequestStatus = `-- name: SetRequestStatus :one
+UPDATE purchase_request
+SET status = $1, updated_at = now()
+WHERE request_id = $2
+RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by
+`
+
+type SetRequestStatusParams struct {
+	Status    string
+	RequestID uuid.UUID
+}
+
+// Sets a terminal or in-flight status. Used by the owner closing their own request and,
+// through the internal API, by Admin/Contact once an offer has been approved.
+func (q *Queries) SetRequestStatus(ctx context.Context, arg SetRequestStatusParams) (PurchaseRequest, error) {
+	row := q.db.QueryRow(ctx, setRequestStatus, arg.Status, arg.RequestID)
+	var i PurchaseRequest
+	err := row.Scan(
+		&i.RequestID,
+		&i.ItemName,
+		&i.Description,
+		&i.Category,
+		&i.Status,
+		&i.TotalCustomers,
+		&i.TotalQuantity,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }

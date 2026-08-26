@@ -1,6 +1,6 @@
 -- name: CreateRequest :one
-INSERT INTO purchase_request (item_name, description, category)
-VALUES (@item_name, @description, @category)
+INSERT INTO purchase_request (item_name, description, category, created_by)
+VALUES (@item_name, @description, @category, @created_by)
 RETURNING *;
 
 -- name: GetRequest :one
@@ -70,3 +70,11 @@ FROM (
 ) d
 WHERE pr.request_id = @request_id
 RETURNING pr.*;
+
+-- Sets a terminal or in-flight status. Used by the owner closing their own request and,
+-- through the internal API, by Admin/Contact once an offer has been approved.
+-- name: SetRequestStatus :one
+UPDATE purchase_request
+SET status = @status, updated_at = now()
+WHERE request_id = @request_id
+RETURNING *;

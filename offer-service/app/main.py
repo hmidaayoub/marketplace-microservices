@@ -10,9 +10,9 @@ from sqlalchemy import text
 
 from app.clients import ServiceClients
 from app.config import get_settings
-from app.db import dispose_engine, get_engine
+from app.db import dispose_engine, get_engine, get_sessionmaker
 from app.errors import register_exception_handlers
-from app.events import Publisher
+from app.events import Publisher, Relay
 from app.migrate import run_migrations
 from app.routers import internal, offers
 
@@ -56,10 +56,17 @@ async def lifespan(app: FastAPI):
     # The connection is opened on the first publish, not here: the service must start
     # whether or not the broker is up, and reconnect on its own if it restarts.
     app.state.publisher = Publisher(settings.rabbitmq_url, "offer-service")
+
+    # Nothing publishes inline. Events are written to the outbox inside the business
+    # transaction and this relay is the only thing that sends them, so a broker outage
+    # delays a notification instead of losing it.
+    app.state.relay = Relay(get_sessionmaker(), app.state.publisher)
+    app.state.relay.start()
     log.info("offer-service listening on port %s", settings.server_port)
 
     yield
 
+    await app.state.relay.aclose()
     await app.state.publisher.aclose()
     await app.state.clients.aclose()
     await dispose_engine()

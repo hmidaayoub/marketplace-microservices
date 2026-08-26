@@ -540,21 +540,25 @@ func containsAny(haystack string, needles ...string) bool {
 
 // --- notification events (spec flow 1 step 8, docs/events.md) -------------------------
 
-func TestCreatingARequestEmitsRequestJoinedToTheCreator(t *testing.T) {
+func TestCreatingARequestWritesRequestJoinedToTheOutbox(t *testing.T) {
 	h := newHarness(t)
 	userID, token := h.newCustomer()
 
 	h.createRequest(token, "Espresso Machine", 3)
 
-	published := h.notifier.events()
-	if len(published) != 1 {
-		t.Fatalf("published %d events, want 1: %+v", len(published), published)
+	outbox := h.outbox()
+	if len(outbox) != 1 {
+		t.Fatalf("outbox holds %d events, want 1: %+v", len(outbox), outbox)
 	}
-	if published[0].routingKey != events.KeyRequestJoined {
-		t.Errorf("routing key = %q, want %q", published[0].routingKey, events.KeyRequestJoined)
+	if outbox[0].routingKey != events.KeyRequestJoined {
+		t.Errorf("routing key = %q, want %q", outbox[0].routingKey, events.KeyRequestJoined)
+	}
+	// Written by the transaction, not yet sent: the relay is what publishes.
+	if outbox[0].publishedAt != nil {
+		t.Errorf("row is already marked published; the relay should own that")
 	}
 
-	notifications := published[0].notifications
+	notifications := outbox[0].notifications
 	if len(notifications) != 1 {
 		t.Fatalf("carried %d notifications, want 1", len(notifications))
 	}
@@ -571,7 +575,7 @@ func TestCreatingARequestEmitsRequestJoinedToTheCreator(t *testing.T) {
 	}
 }
 
-func TestJoiningARequestEmitsRequestJoinedToTheJoiner(t *testing.T) {
+func TestJoiningARequestWritesRequestJoinedToTheJoiner(t *testing.T) {
 	h := newHarness(t)
 	_, creator := h.newCustomer()
 	joinerID, joiner := h.newCustomer()
@@ -581,52 +585,273 @@ func TestJoiningARequestEmitsRequestJoinedToTheJoiner(t *testing.T) {
 		t.Fatalf("join: status %d body %s", res.code, res.raw)
 	}
 
-	published := h.notifier.events()
-	if len(published) != 2 {
-		t.Fatalf("published %d events, want 2 (create then join)", len(published))
+	outbox := h.outbox()
+	if len(outbox) != 2 {
+		t.Fatalf("outbox holds %d events, want 2 (create then join)", len(outbox))
 	}
 
-	joined := published[1].notifications[0]
+	joined := outbox[1].notifications[0]
 	if joined.UserID != joinerID {
 		t.Errorf("recipient = %s, want the joiner %s", joined.UserID, joinerID)
 	}
-	// The joiner is told the demand they just became part of.
+	// The joiner is told the demand they just became part of, which means the event is
+	// written after the totals are recomputed - in the same transaction.
 	if !strings.Contains(joined.Message, "2 customers") || !strings.Contains(joined.Message, "8 in total") {
 		t.Errorf("message does not carry the recomputed demand: %q", joined.Message)
 	}
 }
 
-// The event must never be able to fail the operation that produced it - a request that
-// was genuinely joined stays joined whether or not the message went out.
-func TestAFailedJoinEmitsNothing(t *testing.T) {
+// The whole point of the outbox: the event and the change that caused it are one write.
+func TestAFailedJoinWritesNoEvent(t *testing.T) {
 	h := newHarness(t)
 	_, creator := h.newCustomer()
 	_, joiner := h.newCustomer()
 
 	requestID := h.createRequest(creator, "Espresso Machine", 3)
-	before := len(h.notifier.events())
+	before := len(h.outbox())
 
 	// A second join by the same customer is a 409.
 	h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", creator, `{"quantity":1}`)
 	// An unknown request is a 404.
 	h.do(http.MethodPost, "/api/requests/"+uuid.New().String()+"/participants", joiner, `{"quantity":1}`)
 
-	if after := len(h.notifier.events()); after != before {
-		t.Errorf("failed operations published %d events, want none", after-before)
+	if after := len(h.outbox()); after != before {
+		t.Errorf("failed operations wrote %d events, want none", after-before)
 	}
 }
 
-func TestReadsAndLeavesEmitNothing(t *testing.T) {
+func TestReadsAndLeavesWriteNoEvent(t *testing.T) {
 	h := newHarness(t)
 	_, token := h.newCustomer()
 	requestID := h.createRequest(token, "Espresso Machine", 3)
-	before := len(h.notifier.events())
+	before := len(h.outbox())
 
 	h.do(http.MethodGet, "/api/requests", token, "")
 	h.do(http.MethodGet, "/api/requests/"+requestID, token, "")
 	h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", token, "")
 
-	if after := len(h.notifier.events()); after != before {
-		t.Errorf("published %d unexpected events", after-before)
+	if after := len(h.outbox()); after != before {
+		t.Errorf("wrote %d unexpected events", after-before)
+	}
+}
+
+// Every event carries its own id, so the consumer can tell two events apart and a
+// redelivery of one from a fresh occurrence of another.
+func TestEachOutboxEventHasADistinctId(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	_, joiner := h.newCustomer()
+
+	requestID := h.createRequest(creator, "Espresso Machine", 3)
+	h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`)
+
+	outbox := h.outbox()
+	seen := map[uuid.UUID]bool{}
+	for _, e := range outbox {
+		if e.eventID == uuid.Nil {
+			t.Fatalf("event has no id: %+v", e)
+		}
+		if seen[e.eventID] {
+			t.Errorf("duplicate event id %s", e.eventID)
+		}
+		seen[e.eventID] = true
+	}
+}
+
+// The relay is nudged on commit so a notification is not held for the poll interval.
+func TestCommittingAnEventWakesTheRelay(t *testing.T) {
+	h := newHarness(t)
+	_, token := h.newCustomer()
+
+	h.createRequest(token, "Espresso Machine", 3)
+
+	h.waker.mu.Lock()
+	defer h.waker.mu.Unlock()
+	if h.waker.wakes == 0 {
+		t.Error("the relay was never woken, so the event waits for the next tick")
+	}
+}
+
+// --- closing a request (spec section 18: REQUEST_CLOSED) --------------------------------
+
+func TestClosingARequestNotifiesEveryParticipant(t *testing.T) {
+	h := newHarness(t)
+	ownerID, owner := h.newCustomer()
+	joinerID, joiner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`); res.code != http.StatusCreated {
+		t.Fatalf("join: status %d body %s", res.code, res.raw)
+	}
+	before := len(h.outbox())
+
+	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, "")
+	if res.code != http.StatusOK {
+		t.Fatalf("close: status %d body %s", res.code, res.raw)
+	}
+	if got := res.body["status"]; got != StatusClosed {
+		t.Errorf("status = %v, want CLOSED", got)
+	}
+
+	outbox := h.outbox()
+	if len(outbox) != before+1 {
+		t.Fatalf("close wrote %d events, want 1", len(outbox)-before)
+	}
+	closed := outbox[len(outbox)-1]
+	if closed.routingKey != events.KeyRequestClosed {
+		t.Errorf("routing key = %q, want %q", closed.routingKey, events.KeyRequestClosed)
+	}
+
+	// One event carrying every participant, so the fan-out is one transaction: all of
+	// them are told, or none is.
+	recipients := map[uuid.UUID]bool{}
+	for _, n := range closed.notifications {
+		recipients[n.UserID] = true
+		if n.Type != "REQUEST_CLOSED" {
+			t.Errorf("type = %q, want REQUEST_CLOSED", n.Type)
+		}
+		if !strings.Contains(n.Message, "Espresso Machine") {
+			t.Errorf("message does not name the item: %q", n.Message)
+		}
+	}
+	if !recipients[ownerID] || !recipients[joinerID] || len(recipients) != 2 {
+		t.Errorf("recipients = %v, want both the owner and the joiner", recipients)
+	}
+}
+
+// Closing withdraws demand other people joined, so it is the creator's to do.
+func TestOnlyTheCreatorMayCloseARequest(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, joiner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`)
+	before := len(h.outbox())
+
+	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", joiner, "")
+	if res.code != http.StatusForbidden {
+		t.Fatalf("participant closing: status %d, want 403; body %s", res.code, res.raw)
+	}
+	// 403 rather than 404: they can already read the request, they just did not create it.
+	if after := len(h.outbox()); after != before {
+		t.Errorf("a refused close wrote %d events, want none", after-before)
+	}
+
+	// And it really is still open.
+	got := h.do(http.MethodGet, "/api/requests/"+requestID, joiner, "")
+	if got.body["status"] != StatusOpen {
+		t.Errorf("status = %v, want it left OPEN", got.body["status"])
+	}
+}
+
+func TestClosingTwiceIsAConflict(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, ""); res.code != http.StatusOK {
+		t.Fatalf("first close: status %d body %s", res.code, res.raw)
+	}
+	before := len(h.outbox())
+
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, ""); res.code != http.StatusConflict {
+		t.Fatalf("second close: status %d, want 409; body %s", res.code, res.raw)
+	}
+	if after := len(h.outbox()); after != before {
+		t.Error("the second close announced itself again")
+	}
+}
+
+// Once closed, the demand stops moving - which is what the participants were told.
+func TestAClosedRequestAcceptsNoMoreParticipants(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, joiner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, "")
+
+	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":1}`)
+	if res.code != http.StatusConflict {
+		t.Errorf("joining a closed request: status %d, want 409", res.code)
+	}
+}
+
+func TestClosingRequiresACustomerAndAValidId(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", "", ""); res.code != http.StatusUnauthorized {
+		t.Errorf("no token: status %d, want 401", res.code)
+	}
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", h.token(uuid.New(), auth.RoleSeller), ""); res.code != http.StatusForbidden {
+		t.Errorf("as a seller: status %d, want 403", res.code)
+	}
+	if res := h.do(http.MethodPost, "/api/requests/not-a-uuid/close", owner, ""); res.code != http.StatusBadRequest {
+		t.Errorf("malformed id: status %d, want 400", res.code)
+	}
+	if res := h.do(http.MethodPost, "/api/requests/"+uuid.New().String()+"/close", owner, ""); res.code != http.StatusNotFound {
+		t.Errorf("unknown request: status %d, want 404", res.code)
+	}
+}
+
+// --- the internal status API -----------------------------------------------------------
+
+// Offer-service already refuses offers against an OFFER_APPROVED request; until
+// something made that transition, the guard could never fire.
+func TestInternalStatusMovesARequestForward(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	before := len(h.outbox())
+
+	res := h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
+		testInternalAPIKey, `{"status":"OFFER_APPROVED"}`)
+	if res.code != http.StatusOK {
+		t.Fatalf("status %d body %s", res.code, res.raw)
+	}
+	if got := res.body["status"]; got != StatusOfferApproved {
+		t.Errorf("status = %v, want OFFER_APPROVED", got)
+	}
+
+	// No notification: the seller is told by Admin/Contact, and the customers have not
+	// lost anything yet.
+	if after := len(h.outbox()); after != before {
+		t.Errorf("a status change announced itself; that is Admin/Contact's job")
+	}
+}
+
+func TestInternalStatusRejectsWhatItMayNotSet(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	// Reopening is not Admin/Contact's to do.
+	res := h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
+		testInternalAPIKey, `{"status":"OPEN"}`)
+	if res.code != http.StatusBadRequest {
+		t.Errorf("setting OPEN: status %d, want 400; body %s", res.code, res.raw)
+	}
+
+	res = h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
+		testInternalAPIKey, `{"status":"NONSENSE"}`)
+	if res.code != http.StatusBadRequest {
+		t.Errorf("unknown status: status %d, want 400", res.code)
+	}
+}
+
+func TestInternalStatusRequiresTheSharedKey(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	path := "/internal/requests/" + requestID + "/status"
+
+	if res := h.doInternalWithBody(http.MethodPatch, path, "", `{"status":"CLOSED"}`); res.code != http.StatusUnauthorized {
+		t.Errorf("no key: status %d, want 401", res.code)
+	}
+	if res := h.doInternalWithBody(http.MethodPatch, path, "wrong-key", `{"status":"CLOSED"}`); res.code != http.StatusUnauthorized {
+		t.Errorf("wrong key: status %d, want 401", res.code)
 	}
 }

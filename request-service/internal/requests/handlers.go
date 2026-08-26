@@ -3,7 +3,6 @@ package requests
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,10 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
-	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/httpx"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/middleware"
-	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/store"
 )
 
 const (
@@ -27,22 +24,16 @@ const (
 // Narrowing it here keeps the tests free of an HTTP stub for cases that never call out.
 type customerResolver interface {
 	ResolveCustomerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
-}
-
-// notifier is the part of the event publisher the handlers need. Narrowing it keeps
-// the tests free of a broker: they assert on what would have been published.
-type notifier interface {
-	PublishOrLog(ctx context.Context, routingKey string, notifications ...events.Notification)
+	ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error)
 }
 
 type Handler struct {
 	service   *Service
 	customers customerResolver
-	events    notifier
 }
 
-func NewHandler(service *Service, customers customerResolver, publisher notifier) *Handler {
-	return &Handler{service: service, customers: customers, events: publisher}
+func NewHandler(service *Service, customers customerResolver) *Handler {
+	return &Handler{service: service, customers: customers}
 }
 
 // Create handles POST /api/requests.
@@ -61,22 +52,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorUserID, ok := callerUserID(w, r)
+	if !ok {
+		return
+	}
+
 	created, err := h.service.Create(r.Context(), customerID, CreateInput{
 		ItemName:    body.ItemName,
 		Description: body.Description,
 		Category:    body.Category,
 		Quantity:    body.Quantity,
+		ActorUserID: actorUserID,
 	})
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-
-	// Flow 1, step 8. After the transaction, and never able to fail it: the request
-	// exists whether or not the customer is told about it.
-	h.notifyParticipant(r, created, "Your request is open",
-		fmt.Sprintf("Your request for %s is open. You are its first participant, wanting %d.",
-			created.ItemName, body.Quantity))
 
 	httpx.JSON(w, http.StatusCreated, toResponse(created))
 }
@@ -166,15 +157,16 @@ func (h *Handler) Join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.service.Join(r.Context(), requestID, customerID, body.Quantity)
+	actorUserID, ok := callerUserID(w, r)
+	if !ok {
+		return
+	}
+
+	updated, err := h.service.Join(r.Context(), requestID, customerID, actorUserID, body.Quantity)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-
-	h.notifyParticipant(r, updated, "You joined a request",
-		fmt.Sprintf("You joined the request for %s, wanting %d. It now has %d customers wanting %d in total.",
-			updated.ItemName, body.Quantity, updated.TotalCustomers, updated.TotalQuantity))
 
 	httpx.JSON(w, http.StatusCreated, toResponse(updated))
 }
@@ -227,6 +219,87 @@ func (h *Handler) Leave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Close handles POST /api/requests/{requestId}/close.
+func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := pathUUID(w, r, "requestId")
+	if !ok {
+		return
+	}
+
+	customerID, ok := h.callerCustomerID(w, r)
+	if !ok {
+		return
+	}
+
+	// Resolved before the transaction: closing tells every participant, and each one
+	// needs a userId that only customer-service can supply. A participant whose lookup
+	// fails is simply not notified - see Close.
+	recipients, err := h.participantUserIDs(r, requestID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	closed, err := h.service.Close(r.Context(), CloseInput{
+		RequestID:  requestID,
+		CustomerID: customerID,
+		Recipients: recipients,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toResponse(closed))
+}
+
+// participantUserIDs maps every participant to the userId a notification is addressed
+// to. One unresolvable participant does not fail the close: the request is the owner's
+// to end, and a customer-service blip must not stand in the way of that.
+func (h *Handler) participantUserIDs(r *http.Request, requestID uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	customerIDs, err := h.service.ParticipantCustomerIDs(r.Context(), requestID)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients := make(map[uuid.UUID]uuid.UUID, len(customerIDs))
+	for _, customerID := range customerIDs {
+		userID, err := h.customers.ResolveUserID(r.Context(), customerID)
+		if err != nil {
+			slog.WarnContext(r.Context(), "cannot address a participant; closing without them",
+				"customerId", customerID, "error", err)
+			continue
+		}
+		recipients[customerID] = userID
+	}
+	return recipients, nil
+}
+
+// InternalSetStatus handles PATCH /internal/requests/{requestId}/status.
+//
+// How Admin/Contact moves a request to OFFER_APPROVED once it has approved an offer.
+// Offer-service already refuses new offers against a request in that state, so until
+// something made the transition that guard could never fire.
+func (h *Handler) InternalSetStatus(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := pathUUID(w, r, "requestId")
+	if !ok {
+		return
+	}
+
+	var body statusBody
+	if !httpx.DecodeJSON(w, r, &body) {
+		return
+	}
+
+	updated, err := h.service.SetStatus(r.Context(), requestID, body.Status)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toResponse(updated))
 }
 
 // InternalGet handles GET /internal/requests/{requestId}, used by other services to
@@ -295,25 +368,16 @@ func (h *Handler) callerCustomerID(w http.ResponseWriter, r *http.Request) (uuid
 	return uuid.Nil, false
 }
 
-// notifyParticipant emits REQUEST_JOINED to the customer who acted.
-//
-// The recipient is the token subject, not the customerId the request records:
-// notification-service is addressed by global userId and never resolves an identity,
-// so the producer supplies the one it already holds.
-func (h *Handler) notifyParticipant(r *http.Request, request store.PurchaseRequest, title, message string) {
-	if h.events == nil {
-		return
-	}
+// callerUserID returns the token subject, which is who a notification is addressed to.
+// Notification-service is addressed by global userId and never resolves an identity, so
+// the producer supplies the one it already holds.
+func callerUserID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	claims, ok := middleware.ClaimsFrom(r.Context())
 	if !ok {
-		return
+		httpx.Error(w, http.StatusUnauthorized, "Unauthenticated")
+		return uuid.Nil, false
 	}
-	h.events.PublishOrLog(r.Context(), events.KeyRequestJoined, events.Notification{
-		UserID:  claims.UserID,
-		Type:    "REQUEST_JOINED",
-		Title:   title,
-		Message: message,
-	})
+	return claims.UserID, true
 }
 
 // fail maps a domain error to its status. Anything unrecognised is a real fault: it is
@@ -328,6 +392,14 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, http.StatusConflict, "You have already joined this request")
 	case errors.Is(err, ErrRequestNotOpen):
 		httpx.Error(w, http.StatusConflict, "Request is no longer open")
+	case errors.Is(err, ErrRequestNotClosable):
+		httpx.Error(w, http.StatusConflict, "Request can no longer be closed")
+	case errors.Is(err, ErrInvalidStatus):
+		httpx.Error(w, http.StatusBadRequest, "status must be one of OFFER_PENDING, OFFER_APPROVED, CLOSED, CANCELLED")
+
+	// Not 404: the caller can see the request, they simply did not create it.
+	case errors.Is(err, ErrNotRequestOwner):
+		httpx.Error(w, http.StatusForbidden, "Only the customer who created this request may close it")
 	default:
 		slog.ErrorContext(r.Context(), "unhandled error", "path", r.URL.Path, "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "Internal server error")

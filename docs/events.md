@@ -68,11 +68,41 @@ missed ack, so `eventId` is inserted into `processed_event` in the same transact
 the notifications. A redelivery hits the primary key, is recognised as already handled,
 and is acked without writing anything twice.
 
-**Publishing is best-effort and happens after the business transaction commits.** A
-broker that is down cannot roll back a request that was genuinely joined; the failure
-is logged and the notification is lost. Closing that gap needs a transactional outbox
-in each producer - the same machinery that would close the dual-write window in
-admin-service's `Decide` - and is deliberately not built here.
+**Nothing is published inline.** Every producer writes the event to its own
+`notification_outbox` table inside the transaction that caused it, and a relay drains
+that table to the broker. The event and the business change are one write: there is no
+window in which a request is joined but the notification has vanished, because a
+failure rolls back both.
+
+That is what makes a broker outage cost latency rather than the notification. The row
+is already durable when the producer answers its caller, and the relay retries until it
+is sent - so an event produced while RabbitMQ is down is delivered when it comes back,
+with nobody restarting anything.
+
+```
+  business tx ──┬── the change (request, offer, decision)
+                └── notification_outbox row        ← one commit
+
+  relay loop  ──── SELECT … WHERE published_at IS NULL
+                   FOR UPDATE SKIP LOCKED          ← safe with several replicas
+                   publish → mark published_at
+```
+
+The `eventId` is fixed when the row is written, not when it is published. A relay that
+dies between publishing and the commit that marks the row sent will publish it again on
+restart with the same id, which the consumer recognises as a redelivery - so
+at-least-once relaying stays exactly-once in effect.
+
+The relay polls rather than using `LISTEN`/`NOTIFY`: a subscription would be lower
+latency but would silently miss rows written while its connection was down, which is
+the one case the outbox exists for. A poll re-reads the table and cannot miss anything.
+Producers nudge it on commit, so the interval only matters when a nudge is lost.
+
+**What is still not transactional:** admin-service's `Decide` relays the offer status to
+offer-service over HTTP, and moving the request to `OFFER_APPROVED` is a second call
+after the commit. Those are commands to other services rather than notifications, so
+the outbox does not cover them; a command outbox would, at the cost of making an
+approval asynchronous. See the README.
 
 **A message that cannot be processed is dead-lettered, never requeued in place.** A
 poison message requeued to the same queue is redelivered immediately and forever, which
@@ -88,11 +118,18 @@ and replay.
 | `offer.approved` | `OFFER_APPROVED` | admin-service | the seller |
 | `offer.rejected` | `OFFER_REJECTED` | admin-service | the seller |
 | `contact.access.granted` | `CONTACT_ACCESS_GRANTED` | admin-service | the seller |
-| `request.closed` | `REQUEST_CLOSED` | *(no producer yet)* | every participant |
+| `request.closed` | `REQUEST_CLOSED` | request-service | every participant |
 
-`REQUEST_CLOSED` is specified in section 18 but has no trigger: nothing in the platform
-moves a request out of `OPEN` today. The consumer handles it already - it needs a
-close operation in request-service, which is a business change rather than wiring.
+`REQUEST_CLOSED` is the one genuine fan-out: one event carrying a notification per
+participant, written in a single transaction with the status change. A close that
+reached some participants and not others would be worse than one that reached none,
+because the owner could not safely retry it.
+
+Its recipients are resolved before the transaction opens - participation is recorded as
+`customerId`s and notification-service is addressed by `userId`, so the producer makes
+the hop through customer-service. Resolution is a network call per participant, and
+holding a row lock across those is how a slow dependency becomes a database outage. A
+participant whose lookup fails is skipped and logged rather than blocking the close.
 
 ## Why the HTTP internal API is still there
 

@@ -97,36 +97,34 @@ func TestMain(m *testing.M) {
 
 // --- harness ---------------------------------------------------------------------
 
-// recordingNotifier stands in for the broker. The tests assert on what would have been
-// published rather than starting a RabbitMQ, which keeps the suite fast; the AMQP path
-// itself is exercised end-to-end against a real broker in the running stack.
-type recordingNotifier struct {
-	mu        sync.Mutex
-	published []publishedEvent
+// countingWaker records the nudges the service sends the relay. There is no broker in
+// this suite: events are asserted by reading the outbox table, which is the thing the
+// transaction actually writes. The AMQP hop itself is exercised end to end against a
+// real RabbitMQ in the running stack.
+type countingWaker struct {
+	mu    sync.Mutex
+	wakes int
 }
 
-type publishedEvent struct {
+func (w *countingWaker) Wake() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wakes++
+}
+
+// outboxEvent is one row of notification_outbox, as the relay would read it.
+type outboxEvent struct {
+	eventID       uuid.UUID
 	routingKey    string
 	notifications []events.Notification
-}
-
-func (n *recordingNotifier) PublishOrLog(_ context.Context, routingKey string, ns ...events.Notification) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.published = append(n.published, publishedEvent{routingKey: routingKey, notifications: ns})
-}
-
-func (n *recordingNotifier) events() []publishedEvent {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return append([]publishedEvent(nil), n.published...)
+	publishedAt   *time.Time
 }
 
 type harness struct {
 	t      *testing.T
 	router http.Handler
 
-	notifier *recordingNotifier
+	waker *countingWaker
 
 	// userID -> customerID, as customer-service would resolve it.
 	profiles map[uuid.UUID]uuid.UUID
@@ -138,15 +136,37 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	if _, err := testPool.Exec(context.Background(), "TRUNCATE purchase_request CASCADE"); err != nil {
-		t.Fatalf("cleaning tables: %v", err)
+	for _, table := range []string{"purchase_request", "notification_outbox"} {
+		if _, err := testPool.Exec(context.Background(), "TRUNCATE "+table+" CASCADE"); err != nil {
+			t.Fatalf("cleaning %s: %v", table, err)
+		}
 	}
 
-	h := &harness{t: t, profiles: map[uuid.UUID]uuid.UUID{}, notifier: &recordingNotifier{}}
+	h := &harness{t: t, profiles: map[uuid.UUID]uuid.UUID{}, waker: &countingWaker{}}
 
 	// Stands in for customer-service's /internal/customers/by-user/{userId}.
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.sawAPIKey = r.Header.Get(middleware.InternalAPIKeyHeader)
+
+		// customerId -> userId, which the close path uses to address participants.
+		if !strings.Contains(r.URL.Path, "/by-user/") {
+			raw := strings.TrimPrefix(r.URL.Path, "/internal/customers/")
+			customerID, err := uuid.Parse(raw)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for userID, mapped := range h.profiles {
+				if mapped == customerID {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"customerId": customerID.String(), "userId": userID.String()})
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 
 		raw := strings.TrimPrefix(r.URL.Path, "/internal/customers/by-user/")
 		userID, err := uuid.Parse(raw)
@@ -166,9 +186,8 @@ func newHarness(t *testing.T) *harness {
 
 	h.router = NewRouter(RouterConfig{
 		Handler: NewHandler(
-			NewService(testPool),
+			NewService(testPool, h.waker),
 			newCustomerClient(stub.URL),
-			h.notifier,
 		),
 		Verifier:       auth.NewVerifier([]byte(testSecret)),
 		InternalAPIKey: testInternalAPIKey,
@@ -253,6 +272,24 @@ func (h *harness) doInternal(method, path, apiKey string) response {
 	return out
 }
 
+// doInternalWithBody is doInternal for the routes that take one.
+func (h *harness) doInternalWithBody(method, path, apiKey, body string) response {
+	h.t.Helper()
+
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set(middleware.InternalAPIKeyHeader, apiKey)
+	}
+
+	rec := httptest.NewRecorder()
+	h.router.ServeHTTP(rec, req)
+
+	out := response{code: rec.Code, raw: rec.Body.String()}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out.raw)), &out.body)
+	return out
+}
+
 func (h *harness) createRequest(token, itemName string, quantity int) string {
 	h.t.Helper()
 	res := h.do(http.MethodPost, "/api/requests", token,
@@ -270,6 +307,33 @@ func num(t *testing.T, body map[string]any, field string) int {
 		t.Fatalf("field %q missing or not a number in %v", field, body)
 	}
 	return int(v)
+}
+
+// outbox returns every event the transactions wrote, oldest first.
+func (h *harness) outbox() []outboxEvent {
+	h.t.Helper()
+
+	rows, err := testPool.Query(context.Background(),
+		`SELECT event_id, routing_key, payload, published_at
+		   FROM notification_outbox ORDER BY created_at`)
+	if err != nil {
+		h.t.Fatalf("reading outbox: %v", err)
+	}
+	defer rows.Close()
+
+	var out []outboxEvent
+	for rows.Next() {
+		var e outboxEvent
+		var payload []byte
+		if err := rows.Scan(&e.eventID, &e.routingKey, &payload, &e.publishedAt); err != nil {
+			h.t.Fatalf("scanning outbox row: %v", err)
+		}
+		if err := json.Unmarshal(payload, &e.notifications); err != nil {
+			h.t.Fatalf("decoding outbox payload: %v", err)
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func newCustomerClient(baseURL string) customerResolver {

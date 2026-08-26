@@ -22,12 +22,19 @@ type quantityBody struct {
 	Quantity int32 `json:"quantity"`
 }
 
+// statusBody is the internal status call. The set of acceptable values is checked in
+// the service, so one list governs both this and any other caller.
+type statusBody struct {
+	Status string `json:"status"`
+}
+
 // requestResponse is the shape returned to end users and to internal callers alike.
 // It carries no customerId: participant identity is only ever exposed through
 // /internal/requests/{id}/participants, so a seller browsing demand cannot enumerate
 // the customers behind it (R8/R9 keep contact data behind an explicit grant).
 type requestResponse struct {
 	RequestID      uuid.UUID `json:"requestId"`
+	CreatedBy      uuid.UUID `json:"createdBy,omitempty"`
 	ItemName       string    `json:"itemName"`
 	Description    string    `json:"description"`
 	Category       string    `json:"category"`
@@ -50,7 +57,7 @@ type participantsResponse struct {
 }
 
 func toResponse(r store.PurchaseRequest) requestResponse {
-	return requestResponse{
+	out := requestResponse{
 		RequestID:      r.RequestID,
 		ItemName:       r.ItemName,
 		Description:    r.Description,
@@ -61,6 +68,13 @@ func toResponse(r store.PurchaseRequest) requestResponse {
 		CreatedAt:      r.CreatedAt,
 		UpdatedAt:      r.UpdatedAt,
 	}
+	// The owner is a customerId, which participants already learn nothing else from -
+	// it is the same identifier the request is keyed by internally, and knowing who may
+	// close a request is part of reading it.
+	if r.CreatedBy.Valid {
+		out.CreatedBy = uuid.UUID(r.CreatedBy.Bytes)
+	}
+	return out
 }
 
 func toResponses(rs []store.PurchaseRequest) []requestResponse {

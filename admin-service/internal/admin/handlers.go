@@ -1,9 +1,7 @@
 package admin
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/clients"
-	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/httpx"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/middleware"
 )
@@ -22,19 +19,12 @@ const (
 	maxPageSize     = 100
 )
 
-// notifier is the part of the event publisher the handlers need. Narrowing it keeps
-// the tests free of a broker: they assert on what would have been published.
-type notifier interface {
-	PublishOrLog(ctx context.Context, routingKey string, notifications ...events.Notification)
-}
-
 type Handler struct {
 	service *Service
-	events  notifier
 }
 
-func NewHandler(service *Service, publisher notifier) *Handler {
-	return &Handler{service: service, events: publisher}
+func NewHandler(service *Service) *Handler {
+	return &Handler{service: service}
 }
 
 // PendingOffers handles GET /api/admin/offers/pending.
@@ -101,9 +91,6 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, decision string
 		h.fail(w, r, err)
 		return
 	}
-
-	// Flow 3, step 7. After the decision has committed, and unable to undo it.
-	h.notifySeller(r, result)
 
 	httpx.JSON(w, http.StatusCreated, toDecisionResponse(result.Decision, result.ContactsGranted))
 }
@@ -211,59 +198,6 @@ func (h *Handler) InternalCheckAccess(w http.ResponseWriter, r *http.Request) {
 		CustomerID: customerID,
 		Allowed:    allowed,
 	})
-}
-
-// notifySeller emits the events that follow a decision (spec flow 3, step 7): the
-// outcome itself, and - when the approval granted contact permission - the fact that
-// the seller may now reach the customers behind the request.
-//
-// Everything here is best-effort. The decision is already committed and the grants are
-// already written; a broker or a lookup failing at this point must not change either,
-// so nothing below can return an error to the caller.
-func (h *Handler) notifySeller(r *http.Request, result DecideResult) {
-	if h.events == nil {
-		return
-	}
-
-	// The seller is held as a sellerId, but notification-service is addressed by
-	// userId and never resolves an identity - so the hop is made here.
-	sellerUserID, err := h.service.ResolveSellerUserID(r.Context(), result.SellerID)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "cannot address decision notification; skipping",
-			"sellerId", result.SellerID, "error", err)
-		return
-	}
-
-	approved := result.Decision.Decision == DecisionApproved
-	key, notificationType, title := events.KeyOfferRejected, "OFFER_REJECTED", "Your offer was not approved"
-	message := "An admin reviewed your offer and did not approve it."
-	if approved {
-		key, notificationType, title = events.KeyOfferApproved, "OFFER_APPROVED", "Your offer was approved"
-		message = "An admin approved your offer."
-	}
-	if reason := result.Decision.Reason; reason != "" {
-		message += " Reason: " + reason
-	}
-
-	h.events.PublishOrLog(r.Context(), key, events.Notification{
-		UserID:  sellerUserID,
-		Type:    notificationType,
-		Title:   title,
-		Message: message,
-	})
-
-	// A separate event, because it is a separate fact: R8 is precisely that approval
-	// and contact permission are not the same thing.
-	if approved && result.ContactsGranted > 0 {
-		h.events.PublishOrLog(r.Context(), events.KeyContactAccessGranted, events.Notification{
-			UserID: sellerUserID,
-			Type:   "CONTACT_ACCESS_GRANTED",
-			Title:  "You can now contact the customers",
-			Message: fmt.Sprintf(
-				"You have been granted contact access to %d customer(s) on this request.",
-				result.ContactsGranted),
-		})
-	}
 }
 
 // fail maps a domain error to its status. Anything unrecognised is a real fault: it is

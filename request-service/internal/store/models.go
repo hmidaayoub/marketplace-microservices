@@ -8,7 +8,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type NotificationOutbox struct {
+	OutboxID    uuid.UUID
+	EventID     uuid.UUID
+	RoutingKey  string
+	Payload     []byte
+	CreatedAt   time.Time
+	PublishedAt pgtype.Timestamptz
+	Attempts    int32
+	LastError   pgtype.Text
+}
 
 type PurchaseRequest struct {
 	RequestID      uuid.UUID
@@ -20,6 +32,7 @@ type PurchaseRequest struct {
 	TotalQuantity  int64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	CreatedBy      pgtype.UUID
 }
 
 type RequestParticipant struct {

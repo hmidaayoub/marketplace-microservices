@@ -38,21 +38,47 @@ func NewCustomer(baseURL, apiKey string, httpClient *http.Client) *Customer {
 
 type customerResponse struct {
 	CustomerID uuid.UUID `json:"customerId"`
+	UserID     uuid.UUID `json:"userId"`
+}
+
+// ResolveUserID maps a customerId back to the global userId.
+//
+// The mirror of ResolveCustomerID, needed to address a notification: participation is
+// recorded as customerIds, but notification-service is addressed by userId and never
+// resolves an identity itself, so the producer makes the hop.
+func (c *Customer) ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error) {
+	body, err := c.get(ctx, fmt.Sprintf("%s/internal/customers/%s", c.baseURL, customerID))
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if body.UserID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("%w: response had no userId", ErrCustomerServiceUnavailable)
+	}
+	return body.UserID, nil
 }
 
 func (c *Customer) ResolveCustomerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
-	url := fmt.Sprintf("%s/internal/customers/by-user/%s", c.baseURL, userID)
+	body, err := c.get(ctx, fmt.Sprintf("%s/internal/customers/by-user/%s", c.baseURL, userID))
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if body.CustomerID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("%w: response had no customerId", ErrCustomerServiceUnavailable)
+	}
+	return body.CustomerID, nil
+}
 
+func (c *Customer) get(ctx context.Context, url string) (customerResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("%w: %v", ErrCustomerServiceUnavailable, err)
+		return customerResponse{}, fmt.Errorf("%w: %v", ErrCustomerServiceUnavailable, err)
 	}
 	req.Header.Set(middleware.InternalAPIKeyHeader, c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("%w: %v", ErrCustomerServiceUnavailable, err)
+		return customerResponse{}, fmt.Errorf("%w: %v", ErrCustomerServiceUnavailable, err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -62,17 +88,14 @@ func (c *Customer) ResolveCustomerID(ctx context.Context, userID uuid.UUID) (uui
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return uuid.Nil, ErrCustomerNotFound
+		return customerResponse{}, ErrCustomerNotFound
 	default:
-		return uuid.Nil, fmt.Errorf("%w: status %d", ErrCustomerServiceUnavailable, resp.StatusCode)
+		return customerResponse{}, fmt.Errorf("%w: status %d", ErrCustomerServiceUnavailable, resp.StatusCode)
 	}
 
 	var body customerResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return uuid.Nil, fmt.Errorf("%w: decoding response: %v", ErrCustomerServiceUnavailable, err)
+		return customerResponse{}, fmt.Errorf("%w: decoding response: %v", ErrCustomerServiceUnavailable, err)
 	}
-	if body.CustomerID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("%w: response had no customerId", ErrCustomerServiceUnavailable)
-	}
-	return body.CustomerID, nil
+	return body, nil
 }

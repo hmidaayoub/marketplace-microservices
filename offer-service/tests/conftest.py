@@ -120,19 +120,45 @@ class FakeUpstream:
 
 
 class RecordingPublisher:
-    """Stands in for the broker: the tests assert on what would have been published.
-    The AMQP path itself is exercised end-to-end against a real RabbitMQ in the stack."""
+    """Stands in for the broker: the relay hands it what it would have sent.
+    The AMQP path itself is exercised end to end against a real RabbitMQ in the stack."""
 
     def __init__(self) -> None:
         self.published: list[tuple[str, list[dict]]] = []
 
-    async def publish_or_log(self, routing_key: str, notifications: list[dict]) -> None:
+    async def publish_event(self, event_id, routing_key: str, notifications: list[dict]) -> None:
         # Mirrors the real Publisher, which returns early rather than sending an event
         # with no recipients. A double that is more permissive than the thing it stands
         # in for hides exactly the behaviour the tests are meant to pin down.
         if not notifications:
             return
         self.published.append((routing_key, notifications))
+
+    async def aclose(self) -> None:
+        return None
+
+
+class RecordingRelay:
+    """Replaces the background relay so the suite never reaches for a broker.
+
+    The real relay is stopped as soon as the app starts; its poll loop would otherwise
+    spend the whole suite trying to connect. Tests that care about relaying call
+    drain(), which runs the real Relay._drain against the recording publisher - so the
+    outbox query, the marking and the ordering are all still the production code.
+    """
+
+    def __init__(self, publisher: RecordingPublisher) -> None:
+        self.publisher = publisher
+        self.wakes = 0
+
+    def wake(self) -> None:
+        self.wakes += 1
+
+    async def drain(self) -> int:
+        from app.db import get_sessionmaker
+        from app.events import Relay
+
+        return await Relay(get_sessionmaker(), self.publisher)._drain()
 
     async def aclose(self) -> None:
         return None
@@ -169,9 +195,15 @@ async def client(
             transport=httpx.MockTransport(upstream.handler),
             headers={"X-Internal-Api-Key": TEST_INTERNAL_KEY},
         )
+        # Stop the real relay before its poll loop reaches for a broker, and swap both
+        # it and the publisher for recorders.
+        await app.state.relay.aclose()
         app.state.publisher = publisher
+        app.state.relay = RecordingRelay(publisher)
+        # Handed to tests that need to drive a drain or read the wake count.
+        http_client.relay = app.state.relay
         async with get_engine().begin() as connection:
-            await connection.execute(text("TRUNCATE offer"))
+            await connection.execute(text("TRUNCATE offer, notification_outbox"))
         yield http_client
 
 

@@ -526,7 +526,7 @@ func TestHealthReportsUp(t *testing.T) {
 
 // --- notification events (spec flow 3 step 7, docs/events.md) -------------------------
 
-func TestApprovalEmitsBothTheOutcomeAndTheContactGrant(t *testing.T) {
+func TestApprovalWritesBothTheOutcomeAndTheContactGrant(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
 	sellerUserID, sellerID, _ := h.newSeller()
@@ -539,34 +539,38 @@ func TestApprovalEmitsBothTheOutcomeAndTheContactGrant(t *testing.T) {
 	// Two events, not one: R8 is precisely that approval and contact permission are
 	// separate facts, so they are separate messages.
 	want := []string{events.KeyOfferApproved, events.KeyContactAccessGranted}
-	if got := h.notifier.keys(); !reflect.DeepEqual(got, want) {
+	if got := h.keys(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("routing keys = %v, want %v", got, want)
 	}
 
-	published := h.notifier.events()
-	for _, e := range published {
+	outbox := h.outbox()
+	for _, e := range outbox {
 		n := e.notifications[0]
 		// Addressed by userId: the service holds a sellerId and makes the hop itself,
 		// because notification-service never resolves an identity.
 		if n.UserID != sellerUserID {
 			t.Errorf("%s addressed to %s, want the seller's userId %s", e.routingKey, n.UserID, sellerUserID)
 		}
+		// Written by the transaction, not yet sent: the relay owns publishing.
+		if e.publishedAt != nil {
+			t.Errorf("%s is already marked published", e.routingKey)
+		}
 	}
-	if published[0].notifications[0].Type != "OFFER_APPROVED" {
-		t.Errorf("type = %q, want OFFER_APPROVED", published[0].notifications[0].Type)
+	if outbox[0].notifications[0].Type != "OFFER_APPROVED" {
+		t.Errorf("type = %q, want OFFER_APPROVED", outbox[0].notifications[0].Type)
 	}
-	if published[1].notifications[0].Type != "CONTACT_ACCESS_GRANTED" {
-		t.Errorf("type = %q, want CONTACT_ACCESS_GRANTED", published[1].notifications[0].Type)
+	if outbox[1].notifications[0].Type != "CONTACT_ACCESS_GRANTED" {
+		t.Errorf("type = %q, want CONTACT_ACCESS_GRANTED", outbox[1].notifications[0].Type)
 	}
-	if !strings.Contains(published[1].notifications[0].Message, "2 customer") {
-		t.Errorf("grant message does not carry the count: %q", published[1].notifications[0].Message)
+	if !strings.Contains(outbox[1].notifications[0].Message, "2 customer") {
+		t.Errorf("grant message does not carry the count: %q", outbox[1].notifications[0].Message)
 	}
-	if !strings.Contains(published[0].notifications[0].Message, "looks good") {
-		t.Errorf("outcome message does not carry the admin's reason: %q", published[0].notifications[0].Message)
+	if !strings.Contains(outbox[0].notifications[0].Message, "looks good") {
+		t.Errorf("outcome message does not carry the admin's reason: %q", outbox[0].notifications[0].Message)
 	}
 }
 
-func TestRejectionEmitsOnlyTheOutcome(t *testing.T) {
+func TestRejectionWritesOnlyTheOutcome(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
 	sellerUserID, sellerID, _ := h.newSeller()
@@ -579,31 +583,54 @@ func TestRejectionEmitsOnlyTheOutcome(t *testing.T) {
 	}
 
 	// A rejection grants nothing, so there is no contact-access event to send.
-	if got := h.notifier.keys(); !reflect.DeepEqual(got, []string{events.KeyOfferRejected}) {
+	if got := h.keys(); !reflect.DeepEqual(got, []string{events.KeyOfferRejected}) {
 		t.Fatalf("routing keys = %v, want just %q", got, events.KeyOfferRejected)
 	}
-	n := h.notifier.events()[0].notifications[0]
+	n := h.outbox()[0].notifications[0]
 	if n.UserID != sellerUserID || n.Type != "OFFER_REJECTED" {
 		t.Errorf("notification = %+v, want OFFER_REJECTED to %s", n, sellerUserID)
 	}
 }
 
-// The events must never be able to undo the decision that produced them.
-func TestAFailedDecisionEmitsNothing(t *testing.T) {
+// The whole point of the outbox: the decision and the promise to announce it are one
+// write, so a failed decision cannot leave an event behind.
+func TestAFailedDecisionWritesNoEvent(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
 	_, sellerID, _ := h.newSeller()
 	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
 
-	// Already decided, unknown, and rolled back by a failing relay.
 	h.approve(adminToken, offerID)
-	before := len(h.notifier.events())
+	before := len(h.outbox())
 
-	h.approve(adminToken, offerID)
-	h.approve(adminToken, uuid.New())
+	h.approve(adminToken, offerID)    // already decided
+	h.approve(adminToken, uuid.New()) // unknown offer
 
-	if after := len(h.notifier.events()); after != before {
-		t.Errorf("failed decisions published %d events, want none", after-before)
+	if after := len(h.outbox()); after != before {
+		t.Errorf("failed decisions wrote %d events, want none", after-before)
+	}
+}
+
+// And the reverse: a rolled-back decision must not leave an event either.
+func TestARolledBackDecisionWritesNoEvent(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	h.p.mu.Lock()
+	h.p.failStatusPatch = true
+	h.p.mu.Unlock()
+
+	if res := h.approve(adminToken, offerID); res.code != http.StatusServiceUnavailable {
+		t.Fatalf("approve: status %d body %s", res.code, res.raw)
+	}
+
+	if got := len(h.outbox()); got != 0 {
+		t.Errorf("outbox holds %d events after a rollback, want 0", got)
+	}
+	if got := countRows(t, "offer_decision"); got != 0 {
+		t.Errorf("offer_decision rows = %d, want 0", got)
 	}
 }
 
@@ -620,7 +647,61 @@ func TestADecisionSurvivesAnUnaddressableSeller(t *testing.T) {
 	if got := countRows(t, "offer_decision"); got != 1 {
 		t.Errorf("offer_decision rows = %d, want the decision kept", got)
 	}
-	if got := h.notifier.keys(); len(got) != 0 {
-		t.Errorf("published %v, want nothing when the recipient cannot be resolved", got)
+	if got := h.keys(); len(got) != 0 {
+		t.Errorf("wrote %v, want nothing when the recipient cannot be resolved", got)
+	}
+}
+
+// The relay is nudged on commit so a notification is not held for the poll interval.
+func TestCommittingADecisionWakesTheRelay(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	h.approve(adminToken, offerID)
+
+	h.waker.mu.Lock()
+	defer h.waker.mu.Unlock()
+	if h.waker.wakes == 0 {
+		t.Error("the relay was never woken, so the event waits for the next tick")
+	}
+}
+
+// Offer-service already refuses new offers against an OFFER_APPROVED request; until
+// something made that transition the guard could never fire.
+func TestApprovingAnOfferMarksTheRequestApproved(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, requestID := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	if res := h.approve(adminToken, offerID); res.code != http.StatusCreated {
+		t.Fatalf("approve: status %d body %s", res.code, res.raw)
+	}
+
+	h.p.mu.Lock()
+	defer h.p.mu.Unlock()
+	if got := h.p.requestStatus[requestID]; got != "OFFER_APPROVED" {
+		t.Errorf("request-service was told %q, want OFFER_APPROVED", got)
+	}
+}
+
+func TestRejectingAnOfferLeavesTheRequestAlone(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, requestID := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	res := h.do(http.MethodPost, "/api/admin/offers/"+offerID.String()+"/reject", adminToken, "")
+	if res.code != http.StatusCreated {
+		t.Fatalf("reject: status %d body %s", res.code, res.raw)
+	}
+
+	// The demand is still live: another seller may still win it.
+	h.p.mu.Lock()
+	defer h.p.mu.Unlock()
+	if got, ok := h.p.requestStatus[requestID]; ok {
+		t.Errorf("request-service was told %q; a rejection changes nothing", got)
 	}
 }

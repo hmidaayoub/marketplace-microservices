@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/clients"
+	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/events"
 	"github.com/hmidaayoub/marketplace-microservices/admin-service/internal/store"
 )
 
@@ -33,6 +35,9 @@ const (
 	statusPending = "PENDING"
 	statusGranted = "GRANTED"
 
+	// What request-service is told once an offer against it has been approved.
+	statusOfferApproved = "OFFER_APPROVED"
+
 	uniqueViolation = "23505"
 )
 
@@ -46,6 +51,7 @@ type offerClient interface {
 
 type requestClient interface {
 	ParticipantCustomerIDs(ctx context.Context, requestID uuid.UUID) ([]uuid.UUID, error)
+	SetStatus(ctx context.Context, requestID uuid.UUID, status string) error
 }
 
 type sellerResolver interface {
@@ -69,14 +75,25 @@ type Deps struct {
 	Auth      phoneReader
 }
 
+// outboxWaker lets the service nudge the relay the moment an event is committed, so a
+// notification is not held for the poll interval when the broker is healthy.
+type outboxWaker interface{ Wake() }
+
 type Service struct {
 	pool    *pgxpool.Pool
 	queries *store.Queries
 	deps    Deps
+	relay   outboxWaker
 }
 
-func NewService(pool *pgxpool.Pool, deps Deps) *Service {
-	return &Service{pool: pool, queries: store.New(pool), deps: deps}
+func NewService(pool *pgxpool.Pool, deps Deps, relay outboxWaker) *Service {
+	return &Service{pool: pool, queries: store.New(pool), deps: deps, relay: relay}
+}
+
+func (s *Service) wakeRelay() {
+	if s.relay != nil {
+		s.relay.Wake()
+	}
 }
 
 type DecideInput struct {
@@ -127,6 +144,20 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 		return DecideResult{}, fmt.Errorf("%w: status is %s", ErrOfferNotPending, offer.Status)
 	}
 
+	// Resolved before the transaction opens, because it is a network call and holding a
+	// row lock across one is how a slow dependency becomes a database outage.
+	//
+	// The offer holds a sellerId, but notification-service is addressed by global userId
+	// and never resolves an identity, so the hop is made here. If it fails the decision
+	// still stands and only the notification is skipped - a seller-service blip must not
+	// be able to block an admin from deciding an offer.
+	sellerUserID, err := s.deps.Sellers.ResolveUserID(ctx, offer.SellerID)
+	if err != nil {
+		slog.WarnContext(ctx, "cannot address decision notification; deciding without it",
+			"sellerId", offer.SellerID, "error", err)
+		sellerUserID = uuid.Nil
+	}
+
 	// Only an approval needs the customers behind the request; a rejection grants
 	// nothing, so it never reads participant identity at all.
 	var customerIDs []uuid.UUID
@@ -142,7 +173,7 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 
 	var result DecideResult
 
-	err = s.inTx(ctx, func(q *store.Queries) error {
+	err = s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
 		decision, err := q.RecordDecision(ctx, store.RecordDecisionParams{
 			OfferID:     in.OfferID,
 			AdminUserID: in.AdminUserID,
@@ -184,6 +215,14 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 			return err
 		}
 
+		// Flow 3, step 7 - written in the same transaction as the decision it reports,
+		// so a broker outage delays the seller hearing about it rather than losing it.
+		if sellerUserID != uuid.Nil {
+			if err := enqueueDecisionEvents(ctx, tx, sellerUserID, in, len(customerIDs)); err != nil {
+				return err
+			}
+		}
+
 		result = DecideResult{
 			Decision:        decision,
 			ContactsGranted: len(customerIDs),
@@ -193,13 +232,67 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 		return nil
 	})
 
-	return result, err
+	s.wakeRelay()
+	if err != nil {
+		return result, err
+	}
+
+	// Deliberately after the commit and deliberately best-effort. The decision, the
+	// grants and offer-service's status all agree by this point; this only tells
+	// request-service that its demand now has an approved offer, which stops further
+	// offers coming in. Failing it would mean refusing a decision that has already been
+	// made, and the worst case if it is missed is that the request keeps taking offers
+	// against demand somebody has already won.
+	if in.Decision == DecisionApproved {
+		if statusErr := s.deps.Requests.SetStatus(ctx, result.RequestID, statusOfferApproved); statusErr != nil {
+			slog.ErrorContext(ctx, "could not mark the request as having an approved offer",
+				"requestId", result.RequestID, "error", statusErr)
+		}
+	}
+
+	return result, nil
 }
 
-// ResolveSellerUserID exposes the sellerId -> userId hop to the handler, which needs it
-// to address a decision notification.
-func (s *Service) ResolveSellerUserID(ctx context.Context, sellerID uuid.UUID) (uuid.UUID, error) {
-	return s.deps.Sellers.ResolveUserID(ctx, sellerID)
+// enqueueDecisionEvents writes the outcome and, when the approval granted contact
+// permission, the fact that the seller may now reach the customers behind the request.
+//
+// Two events rather than one, because they are two facts: R8 is precisely that
+// approving an offer and granting contact access are not the same thing.
+func enqueueDecisionEvents(
+	ctx context.Context, tx pgx.Tx, sellerUserID uuid.UUID, in DecideInput, contactsGranted int,
+) error {
+	approved := in.Decision == DecisionApproved
+
+	key, notificationType := events.KeyOfferRejected, "OFFER_REJECTED"
+	title, message := "Your offer was not approved", "An admin reviewed your offer and did not approve it."
+	if approved {
+		key, notificationType = events.KeyOfferApproved, "OFFER_APPROVED"
+		title, message = "Your offer was approved", "An admin approved your offer."
+	}
+	if in.Reason != "" {
+		message += " Reason: " + in.Reason
+	}
+
+	if err := events.Enqueue(ctx, tx, key, events.Notification{
+		UserID:  sellerUserID,
+		Type:    notificationType,
+		Title:   title,
+		Message: message,
+	}); err != nil {
+		return err
+	}
+
+	if !approved || contactsGranted == 0 {
+		return nil
+	}
+	return events.Enqueue(ctx, tx, events.KeyContactAccessGranted, events.Notification{
+		UserID: sellerUserID,
+		Type:   "CONTACT_ACCESS_GRANTED",
+		Title:  "You can now contact the customers",
+		Message: fmt.Sprintf(
+			"You have been granted contact access to %d customer(s) on this request.",
+			contactsGranted),
+	})
 }
 
 func (s *Service) ListPendingOffers(ctx context.Context, limit, offset int) ([]clients.Offer, error) {
@@ -302,7 +395,10 @@ func (s *Service) HasContactAccess(ctx context.Context, sellerID, customerID, re
 	return count > 0, nil
 }
 
-func (s *Service) inTx(ctx context.Context, fn func(*store.Queries) error) error {
+// inTx hands the callback both the generated queries and the raw transaction: the
+// domain writes go through sqlc, and the outbox insert needs the tx itself, but they
+// have to be the same transaction for the outbox to mean anything.
+func (s *Service) inTx(ctx context.Context, fn func(*store.Queries, pgx.Tx) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -310,7 +406,7 @@ func (s *Service) inTx(ctx context.Context, fn func(*store.Queries) error) error
 	// No-op once the transaction commits; guarantees rollback on every early return.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := fn(s.queries.WithTx(tx)); err != nil {
+	if err := fn(s.queries.WithTx(tx), tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

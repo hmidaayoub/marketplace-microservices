@@ -25,6 +25,9 @@ type Querier interface {
 	// R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
 	// from request_participant in the same transaction as the mutation that changed it.
 	RecalculateDemand(ctx context.Context, requestID uuid.UUID) (PurchaseRequest, error)
+	// Sets a terminal or in-flight status. Used by the owner closing their own request and,
+	// through the internal API, by Admin/Contact once an offer has been approved.
+	SetRequestStatus(ctx context.Context, arg SetRequestStatusParams) (PurchaseRequest, error)
 	UpdateParticipantQuantity(ctx context.Context, arg UpdateParticipantQuantityParams) (RequestParticipant, error)
 }
 

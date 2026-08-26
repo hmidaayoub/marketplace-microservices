@@ -114,6 +114,9 @@ type platform struct {
 	// rollback behaviour is exercised.
 	failStatusPatch bool
 
+	// requestStatus records what request-service was told after a decision.
+	requestStatus map[uuid.UUID]string
+
 	// keys records the internal key each dependency was called with.
 	keys map[string]string
 
@@ -122,67 +125,95 @@ type platform struct {
 	phoneCalls int
 }
 
-// recordingNotifier stands in for the broker. The tests assert on what would have been
-// published rather than starting a RabbitMQ, which keeps the suite fast; the AMQP path
-// itself is exercised end-to-end against a real broker in the running stack.
-type recordingNotifier struct {
-	mu        sync.Mutex
-	published []publishedEvent
+// countingWaker records the nudges the service sends the relay. There is no broker in
+// this suite: events are asserted by reading the outbox table, which is the thing the
+// transaction actually writes. The AMQP hop itself is exercised end to end against a
+// real RabbitMQ in the running stack.
+type countingWaker struct {
+	mu    sync.Mutex
+	wakes int
 }
 
-type publishedEvent struct {
+func (w *countingWaker) Wake() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wakes++
+}
+
+// outboxEvent is one row of notification_outbox, as the relay would read it.
+type outboxEvent struct {
+	eventID       uuid.UUID
 	routingKey    string
 	notifications []events.Notification
+	publishedAt   *time.Time
 }
 
-func (n *recordingNotifier) PublishOrLog(_ context.Context, routingKey string, ns ...events.Notification) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.published = append(n.published, publishedEvent{routingKey: routingKey, notifications: ns})
+type harness struct {
+	t      *testing.T
+	router http.Handler
+	p      *platform
+	waker  *countingWaker
 }
 
-func (n *recordingNotifier) events() []publishedEvent {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return append([]publishedEvent(nil), n.published...)
+// outbox returns every event the transactions wrote, oldest first.
+func (h *harness) outbox() []outboxEvent {
+	h.t.Helper()
+
+	rows, err := testPool.Query(context.Background(),
+		`SELECT event_id, routing_key, payload, published_at
+		   FROM notification_outbox ORDER BY created_at`)
+	if err != nil {
+		h.t.Fatalf("reading outbox: %v", err)
+	}
+	defer rows.Close()
+
+	var out []outboxEvent
+	for rows.Next() {
+		var e outboxEvent
+		var payload []byte
+		if err := rows.Scan(&e.eventID, &e.routingKey, &payload, &e.publishedAt); err != nil {
+			h.t.Fatalf("scanning outbox row: %v", err)
+		}
+		if err := json.Unmarshal(payload, &e.notifications); err != nil {
+			h.t.Fatalf("decoding outbox payload: %v", err)
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
-func (n *recordingNotifier) keys() []string {
+// keys is the routing keys in order, which is what most assertions care about.
+func (h *harness) keys() []string {
 	out := []string{}
-	for _, e := range n.events() {
+	for _, e := range h.outbox() {
 		out = append(out, e.routingKey)
 	}
 	return out
 }
 
-type harness struct {
-	t        *testing.T
-	router   http.Handler
-	p        *platform
-	notifier *recordingNotifier
-}
-
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	for _, table := range []string{"contact_access", "offer_decision"} {
+	for _, table := range []string{"contact_access", "offer_decision", "notification_outbox"} {
 		if _, err := testPool.Exec(context.Background(), "TRUNCATE "+table+" CASCADE"); err != nil {
 			t.Fatalf("cleaning %s: %v", table, err)
 		}
 	}
 
 	p := &platform{
-		offers:      map[uuid.UUID]*clients.Offer{},
-		participant: map[uuid.UUID][]uuid.UUID{},
-		sellerOf:    map[uuid.UUID]uuid.UUID{},
-		userOf:      map[uuid.UUID]uuid.UUID{},
-		phones:      map[uuid.UUID]string{},
-		keys:        map[string]string{},
+		offers:        map[uuid.UUID]*clients.Offer{},
+		participant:   map[uuid.UUID][]uuid.UUID{},
+		requestStatus: map[uuid.UUID]string{},
+		sellerOf:      map[uuid.UUID]uuid.UUID{},
+		userOf:        map[uuid.UUID]uuid.UUID{},
+		phones:        map[uuid.UUID]string{},
+		keys:          map[string]string{},
 	}
 
 	stub := httptest.NewServer(http.HandlerFunc(p.serve))
 	t.Cleanup(stub.Close)
 
+	waker := &countingWaker{}
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	service := NewService(testPool, Deps{
 		Offers:    clients.NewOffer(stub.URL, testInternalAPIKey, httpClient),
@@ -190,16 +221,14 @@ func newHarness(t *testing.T) *harness {
 		Sellers:   clients.NewSeller(stub.URL, testInternalAPIKey, httpClient),
 		Customers: clients.NewCustomer(stub.URL, testInternalAPIKey, httpClient),
 		Auth:      clients.NewAuth(stub.URL, testInternalAPIKey, httpClient),
-	})
-
-	notifier := &recordingNotifier{}
+	}, waker)
 
 	return &harness{
-		t:        t,
-		p:        p,
-		notifier: notifier,
+		t:     t,
+		p:     p,
+		waker: waker,
 		router: NewRouter(RouterConfig{
-			Handler:        NewHandler(service, notifier),
+			Handler:        NewHandler(service),
 			Verifier:       auth.NewVerifier([]byte(testSecret)),
 			InternalAPIKey: testInternalAPIKey,
 			Ready:          func() error { return nil },
@@ -272,6 +301,21 @@ func (p *platform) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(http.StatusOK, offer)
+
+	case strings.HasPrefix(path, "/internal/requests/") && strings.HasSuffix(path, "/status"):
+		p.keys["request"] = r.Header.Get(middleware.InternalAPIKeyHeader)
+		raw := strings.TrimSuffix(strings.TrimPrefix(path, "/internal/requests/"), "/status")
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			writeJSON(http.StatusBadRequest, nil)
+			return
+		}
+		var body struct {
+			Status string `json:"status"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		p.requestStatus[id] = body.Status
+		writeJSON(http.StatusOK, map[string]any{"requestId": id, "status": body.Status})
 
 	case strings.HasPrefix(path, "/internal/requests/") && strings.HasSuffix(path, "/participants"):
 		p.keys["request"] = r.Header.Get(middleware.InternalAPIKeyHeader)

@@ -49,6 +49,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireRole(auth.RoleCustomer))
 				r.Post("/participants", cfg.Handler.Join)
+				// Only the creator may close it; the service enforces that.
+				r.Post("/close", cfg.Handler.Close)
 				r.Put("/participants/me", cfg.Handler.UpdateQuantity)
 				r.Delete("/participants/me", cfg.Handler.Leave)
 			})
@@ -61,6 +63,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{requestId}", cfg.Handler.InternalGet)
 		r.Get("/{requestId}/demand", cfg.Handler.InternalDemand)
 		r.Get("/{requestId}/participants", cfg.Handler.InternalParticipants)
+		r.Patch("/{requestId}/status", cfg.Handler.InternalSetStatus)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {

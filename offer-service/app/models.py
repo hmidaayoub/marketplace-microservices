@@ -5,7 +5,8 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Numeric, String, func
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Numeric, String, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -23,6 +24,54 @@ class OfferStatus:
     ALL = (PENDING, APPROVED, REJECTED, CANCELLED)
     #  R7: only an admin decides, and only on an offer still awaiting review.
     DECIDABLE = (APPROVED, REJECTED)
+
+
+class NotificationOutbox(Base):
+    """Transactional outbox for notification events (see docs/events.md).
+
+    Publishing used to happen after the offer was stored, which meant a broker that was
+    down cost the notification outright: the offer existed and no admin was ever told.
+    The event is now written here in the same transaction as the offer, so the two
+    either both happen or neither does, and a relay moves rows to the broker afterwards.
+
+    That converts "lost while the broker is down" into "delivered late", which is the
+    only honest guarantee available without distributed transactions.
+    """
+
+    __tablename__ = "notification_outbox"
+
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+
+    # Becomes the envelope's eventId. Generated here rather than at publish time so a
+    # relay that publishes a row twice - it died between the publish and the commit that
+    # marks it sent - produces the same id both times, and the consumer's processed_event
+    # table recognises the redelivery instead of duplicating the notification.
+    event_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False, unique=True)
+
+    routing_key: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[list] = mapped_column(JSONB, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(btrim(routing_key)) > 0", name="notification_outbox_routing_key_not_blank"
+        ),
+        # The relay's only query: the oldest unpublished rows. Partial, so it stays small
+        # no matter how much history the table accumulates.
+        Index(
+            "idx_notification_outbox_pending",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+        ),
+    )
 
 
 class Offer(Base):

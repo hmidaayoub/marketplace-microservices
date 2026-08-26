@@ -1,19 +1,16 @@
 // Package events publishes notification events to the broker (see docs/events.md).
 //
-// Publishing is deliberately best-effort and always happens after the business
-// transaction has committed. A broker that is down must not roll back a request that
-// was genuinely joined: the customer joined it, and only the "you joined" message is
-// missing. Every failure here is logged and swallowed.
-//
-// Closing that gap needs a transactional outbox in each producer, which is noted in
-// docs/events.md rather than built.
+// Nothing here is called from a handler. An event is written to the outbox inside the
+// business transaction that caused it (see Enqueue), and the Relay is the only thing
+// that publishes. That is what makes a broker outage cost latency rather than the
+// notification itself: the row is already durable, and the relay retries until it is
+// sent.
 package events
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -88,15 +85,21 @@ func NewPublisher(url, source string) *Publisher {
 	return &Publisher{url: url, source: source}
 }
 
-// Publish sends one event carrying one or more notifications. The error is returned for
-// logging, never for propagating to a caller: see the package comment.
-func (p *Publisher) Publish(ctx context.Context, routingKey string, notifications ...Notification) error {
+// PublishEvent sends one event under a caller-supplied id.
+//
+// The id comes from the outbox row rather than being minted here, so a relay that
+// republishes a row after crashing mid-commit sends the same id twice - which the
+// consumer's processed_event table recognises as a redelivery instead of duplicating
+// the notification.
+func (p *Publisher) PublishEvent(
+	ctx context.Context, eventID uuid.UUID, routingKey string, notifications []Notification,
+) error {
 	if len(notifications) == 0 {
 		return nil
 	}
 
 	body, err := json.Marshal(envelope{
-		EventID:       uuid.New(),
+		EventID:       eventID,
 		OccurredAt:    time.Now().UTC(),
 		Source:        p.source,
 		Notifications: notifications,
@@ -147,15 +150,6 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, notification
 		p.discard()
 	}
 	return fmt.Errorf("publishing %s: %w", routingKey, lastErr)
-}
-
-// PublishOrLog is what handlers call. It makes the best-effort contract impossible to
-// get wrong by accident: there is no error to ignore.
-func (p *Publisher) PublishOrLog(ctx context.Context, routingKey string, notifications ...Notification) {
-	if err := p.Publish(ctx, routingKey, notifications...); err != nil {
-		slog.ErrorContext(ctx, "publishing notification event failed; continuing",
-			"routingKey", routingKey, "error", err)
-	}
 }
 
 func (p *Publisher) acquire() (*amqp.Channel, error) {

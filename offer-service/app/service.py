@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.events import KEY_OFFER_CREATED, enqueue
 from app.models import Offer, OfferStatus
 from app.schemas import OfferCreate, OfferUpdate
 
@@ -36,9 +37,20 @@ class RequestNotAcceptingOffers(Exception):
         self.status = status
 
 
-async def create_offer(session: AsyncSession, seller_id: uuid.UUID, payload: OfferCreate) -> Offer:
+async def create_offer(
+    session: AsyncSession,
+    seller_id: uuid.UUID,
+    payload: OfferCreate,
+    admin_user_ids: Sequence[uuid.UUID] = (),
+) -> Offer:
     """R6: a new offer always starts PENDING. The caller cannot choose otherwise -
-    status is not part of OfferCreate at all."""
+    status is not part of OfferCreate at all.
+
+    The NEW_OFFER event of flow 2 step 7 is written to the outbox in this same
+    transaction, so the offer and the promise to tell the admins about it either both
+    exist or neither does. admin_user_ids is empty when auth-service could not be
+    reached, in which case there is simply nothing to announce.
+    """
     offer = Offer(
         seller_id=seller_id,
         request_id=payload.request_id,
@@ -49,6 +61,28 @@ async def create_offer(session: AsyncSession, seller_id: uuid.UUID, payload: Off
         status=OfferStatus.PENDING,
     )
     session.add(offer)
+
+    # Flushed before the event is built so the offer's own columns are settled - the
+    # message quotes the terms an admin is being asked to review.
+    await session.flush()
+
+    enqueue(
+        session,
+        KEY_OFFER_CREATED,
+        [
+            {
+                "userId": str(admin_id),
+                "type": "NEW_OFFER",
+                "title": "An offer is waiting for review",
+                "message": (
+                    f"A seller offered {offer.available_quantity} at "
+                    f"{offer.price_per_unit} {offer.currency} per unit."
+                ),
+            }
+            for admin_id in admin_user_ids
+        ],
+    )
+
     await session.commit()
     await session.refresh(offer)
     return offer

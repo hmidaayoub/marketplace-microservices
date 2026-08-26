@@ -116,6 +116,10 @@
     {
       "key": "unreadBaseline",
       "value": "0"
+    },
+    {
+      "key": "closableRequestId",
+      "value": ""
     }
   ],
   "item": [
@@ -942,6 +946,251 @@
                   "    pm.expect(b.totalCustomers).to.eql(2);",
                   "    pm.expect(b.totalQuantity).to.eql(15);",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a request to close",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests",
+            "description": "A separate request, so closing it does not disturb the one folders 6-8 use.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"itemName\": \"Cafetiere\",\n  \"description\": \"to be closed\",\n  \"category\": \"kitchen\",\n  \"quantity\": 1\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"closableRequestId\", b.requestId);",
+                  "pm.test(\"records its creator\", () => pm.expect(b.createdBy).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Customer 2 joins it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/participants",
+            "description": "So the close has more than one participant to notify.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 2\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"joined\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A participant cannot close it -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customer2AccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "description": "Closing withdraws demand other people joined, so it belongs to whoever created it. 403 rather than 404: the caller can already read the request, they just did not create it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"forbidden\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The creator closes it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "description": "Emits REQUEST_CLOSED to every participant (spec section 18), written to the outbox in the same transaction as the status change."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"CLOSED\", () => pm.expect(pm.response.json().status).to.eql(\"CLOSED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Closing twice -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "description": "There is nothing left to close."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"conflict\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A closed request takes no more participants -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/participants",
+            "description": "Once closed, the demand stops moving - which is what the participants were told.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 1\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected\", () => pm.expect(pm.response.code).to.be.oneOf([403, 409]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: mark a request as having an approved offer",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}/status",
+            "description": "How Admin/Contact moves a request forward once it approves an offer. Offer-service already refuses new offers against an OFFER_APPROVED request; until something made this transition, that guard could never fire.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"OFFER_PENDING\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"moved\", () => pm.expect(pm.response.json().status).to.eql(\"OFFER_PENDING\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Internal: reopening is refused -> 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Api-Key",
+                "value": "{{internalApiKey}}"
+              }
+            ],
+            "url": "{{requestUrl}}/internal/requests/{{requestId}}/status",
+            "description": "Admin/Contact decides offers, not demand: it can move a request forward but not back.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"OPEN\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"bad request\", () => pm.response.to.have.status(400));"
                 ]
               }
             }
@@ -3197,7 +3446,7 @@
       "name": "12. Session teardown",
       "item": [
         {
-          "name": "Leave request",
+          "name": "Leaving a request with an approved offer -> 409",
           "request": {
             "method": "DELETE",
             "header": [
@@ -3207,7 +3456,7 @@
               }
             ],
             "url": "{{requestUrl}}/api/requests/{{requestId}}/participants/me",
-            "description": "Runs before logout: it needs a live token, and it must run after the internal checks that expect two participants."
+            "description": "Folder 8 approved an offer against this request, which moves it to OFFER_APPROVED. Participants may only change while a request is OPEN: the demand an offer was priced against has to stop moving once that offer has been accepted, or the seller would be held to terms for a quantity that no longer exists."
           },
           "event": [
             {
@@ -3215,7 +3464,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"no content\", () => pm.response.to.have.status(204));"
+                  "pm.test(\"the demand is frozen\", () => pm.response.to.have.status(409));"
                 ]
               }
             }

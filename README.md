@@ -21,8 +21,8 @@ seller service ever stores or returns one.
 | Notification | 8087 | `notification_db` | Implemented (Python) |
 | API Gateway | 8080 | — | Not started |
 
-296 tests pass in total: 87 across the four Maven modules, 82 across the two Go
-modules (50 request, 32 admin), and 127 across the two Python modules (61 offer,
+315 tests pass in total: 87 across the four Maven modules, 96 across the two Go
+modules (60 request, 36 admin), and 132 across the two Python modules (66 offer,
 66 notification).
 
 Every service in the spec is now implemented and the notification events of section 18
@@ -175,9 +175,11 @@ who want it. Endpoints follow spec section 10.
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
 | `PUT` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
 | `DELETE` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
+| `POST` | `/api/requests/{requestId}/close` | CUSTOMER, the creator |
 | `GET` | `/internal/requests/{requestId}` | internal key |
 | `GET` | `/internal/requests/{requestId}/demand` | internal key |
 | `GET` | `/internal/requests/{requestId}/participants` | internal key |
+| `PATCH` | `/internal/requests/{requestId}/status` | internal key |
 
 Browsing is open to any authenticated caller because that is how a seller finds demand
 worth an offer. Everything that records participation is a CUSTOMER action.
@@ -199,8 +201,19 @@ Rules worth knowing:
   `customerId` through customer-service's internal API; a body carrying `customerId` is
   rejected, not ignored.
 - **No phone numbers, ever** (R10). `customerId`s leave only through
-  `/internal/requests/{id}/participants`, which is what Admin/Contact will use to grant
+  `/internal/requests/{id}/participants`, which is what Admin/Contact uses to grant
   ContactAccess — so a seller browsing demand cannot enumerate the customers behind it.
+- **A request has an owner, and only the owner closes it.** `created_by` is set when the
+  request is created, because closing withdraws demand that other people joined — that
+  is not a decision any participant should be able to make for the rest. A participant
+  attempting it gets 403 rather than 404: they can already read the request, they simply
+  did not create it. Closing emits `REQUEST_CLOSED` to every participant, one event
+  carrying them all, written in the same transaction as the status change.
+- **The status lifecycle is now actually driven.** `PATCH /internal/requests/{id}/status`
+  is how Admin/Contact marks a request as having an approved offer. Offer-service has
+  always refused new offers against an `OFFER_APPROVED` request; until something made
+  that transition, the guard could never fire. The internal API accepts only forward
+  transitions — Admin/Contact decides offers, not demand, so it cannot reopen a request.
 
 ## Offer Service
 
@@ -326,11 +339,7 @@ The full contract - topology, envelope, delivery guarantees - is in `docs/events
 | `OFFER_APPROVED` | `offer.approved` | Admin/Contact | the seller |
 | `OFFER_REJECTED` | `offer.rejected` | Admin/Contact | the seller |
 | `CONTACT_ACCESS_GRANTED` | `contact.access.granted` | Admin/Contact | the seller |
-| `REQUEST_CLOSED` | `request.closed` | *(no producer yet)* | every participant |
-
-`REQUEST_CLOSED` is specified but has no trigger: nothing in the platform moves a
-request out of `OPEN` today. The consumer handles it already — it needs a close
-operation in request-service, which is a business change rather than wiring.
+| `REQUEST_CLOSED` | `request.closed` | Request | every participant |
 
 Rules worth knowing:
 
@@ -369,25 +378,41 @@ Rules worth knowing:
   poison message requeued to the same queue is redelivered immediately and forever,
   which takes the consumer down with it.
 
-### What producing an event costs the producer
+### The outbox: why a broker outage costs latency, not notifications
 
-Nothing it cannot afford. Publishing is best-effort and happens *after* the business
-transaction commits, so a broker that is down cannot roll back a request that was
-genuinely joined — the failure is logged and the notification is lost. Two details make
-that safe rather than merely stated:
+Nothing is published inline. Every producer writes the event to its own
+`notification_outbox` table **inside the transaction that caused it**, and a relay
+drains that table to the broker. The event and the business change are one write, so
+there is no window in which a request is joined but the notification has vanished.
 
+```
+  business tx ──┬── the change (request, offer, decision)
+                └── notification_outbox row        ← one commit
+
+  relay loop  ──── SELECT … WHERE published_at IS NULL
+                   FOR UPDATE SKIP LOCKED          ← safe with several replicas
+                   publish → mark published_at
+```
+
+- **The `eventId` is fixed when the row is written**, not when it is published. A relay
+  that dies between publishing and the commit that marks the row sent republishes it
+  with the same id, which the consumer recognises as a redelivery — so at-least-once
+  relaying stays exactly-once in effect.
+- **The relay polls** rather than using `LISTEN`/`NOTIFY`. A subscription would be lower
+  latency but would silently miss rows written while its connection was down, which is
+  the one case the outbox exists for. Producers nudge it on commit, so the interval only
+  matters when a nudge is lost.
 - **The dial is bounded.** `amqp.Dial` defaults to a 30-second timeout, and a stopped
   broker on a Docker network blackholes the connection rather than refusing it. Left
-  alone, that turned every request-creating call into a 16-second wait for a broker
-  nobody was waiting on. The dial is capped at 700ms and the whole publish at 2s.
-- **A publish is retried once.** The first publish after a broker restart is expected
-  to fail: the cached connection looks alive until it is used. Without the retry, every
-  broker blip silently costs one notification — the failure is discovered by the
-  publish that should have carried it.
+  alone, that turned every request-creating call into a 16-second wait. The dial is
+  capped at 700ms and a publish at 2s.
 
-Closing the remaining gap — an event lost because the broker was down when it was
-produced — needs a transactional outbox in each producer, the same machinery that would
-close the dual-write window in Admin/Contact's `Decide`. It is deliberately not built.
+What is still *not* transactional: Admin/Contact's `Decide` relays the offer status to
+offer-service over HTTP, and moves the request to `OFFER_APPROVED` in a second call
+after the commit. Those are commands to other services rather than notifications, so
+the outbox does not cover them. A command outbox would, at the cost of making approval
+asynchronous — an admin would stop learning from the response whether offer-service had
+accepted the decision, which is a worse trade than the window it closes.
 
 ## Running Locally
 
@@ -468,7 +493,7 @@ classes.
   boundaries, interaction flows).
 - `docs/events.md` — the AMQP contract: topology, envelope, delivery guarantees, and
   which service produces which event.
-- `postman/marketplace.postman_collection.json` — 108 requests covering every service,
+- `postman/marketplace.postman_collection.json` — 116 requests covering every service,
   the internal APIs, negative cases and health. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is
