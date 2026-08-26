@@ -47,7 +47,9 @@ services:
       offer-service: {condition: service_started}
       notification-service: {condition: service_started}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first
+      # and nginx listens on IPv4 only, so the probe would be refused by a healthy edge.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 12
