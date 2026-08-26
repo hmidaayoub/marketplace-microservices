@@ -1,0 +1,19 @@
+# Republishes the service ports that the default compose file deliberately withholds.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.direct.yml up
+#
+# Spec section 6 keeps /internal off the public gateway, so the Postman collection's 26
+# /internal and 8 /actuator requests have no route through :8080 by design. They need a
+# direct one. This is the compose equivalent of `kubectl port-forward`: an opt-in hole
+# for testing and debugging, never the default, so forgetting to use it fails closed
+# rather than leaving the internal API exposed.
+#
+# The 82 /api requests do not need this - they go through the gateway either way.
+services:
+  auth-service:         {ports: ["8081:8081"]}
+  customer-service:     {ports: ["8082:8082"]}
+  seller-service:       {ports: ["8083:8083"]}
+  request-service:      {ports: ["8084:8084"]}
+  offer-service:        {ports: ["8085:8085"]}
+  admin-service:        {ports: ["8086:8086"]}
+  notification-service: {ports: ["8087:8087"]}

@@ -19,14 +19,18 @@ seller service ever stores or returns one.
 | Offer | 8085 | `offer_db` | Implemented (Python) |
 | Admin/Contact | 8086 | `admin_contact_db` | Implemented (Go) |
 | Notification | 8087 | `notification_db` | Implemented (Python) |
-| API Gateway | 8080 | — | Not started |
+| API Gateway | 8080 | — | Implemented (nginx) |
 
 315 tests pass in total: 87 across the four Maven modules, 96 across the two Go
 modules (60 request, 36 admin), and 132 across the two Python modules (66 offer,
 66 notification).
 
-Every service in the spec is now implemented and the notification events of section 18
-flow between them over RabbitMQ; only the API Gateway is outstanding.
+Every service in the spec is implemented, the notification events of section 18 flow
+between them over RabbitMQ, and the nine public routes of section 19 are served by the
+gateway. **8080 is the only port the platform publishes.** The seven services are
+reachable only from inside the compose network, which is what makes section 6's rule -
+`/internal` must not be exposed publicly - a property of the topology rather than a
+convention every service has to remember.
 
 The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
 Request and Admin/Contact are Go, Offer and Notification are Python. They interoperate
@@ -52,6 +56,7 @@ error shape, and a malformed path variable reads identically whichever one answe
 | Boilerplate | Lombok | |
 | Observability | Spring Boot Actuator | `/actuator/health` for probes |
 | Messaging | RabbitMQ 3.13 (AMQP) | Notification events; topic exchange — see `docs/events.md` |
+| Edge | nginx 1.27 (alpine) | The nine spec routes, default-deny — `infrastructure/docker/gateway/nginx.conf` |
 | Containers | Docker, Docker Compose | Multi-stage builds, non-root runtime user |
 
 ### Go stack (request-service, admin-service)
@@ -133,7 +138,22 @@ tokens minted by the actual Java stack.
 
 **2. Internal API — `/internal/**`, service-to-service.** Requires a shared secret in
 `X-Internal-Api-Key`, compared in constant time. Callers attach it automatically via a
-`RestTemplate` interceptor. These endpoints must never be routed by the public gateway.
+`RestTemplate` interceptor. These endpoints are not routable through the gateway: it
+serves nine explicit `/api` prefixes and answers everything else with 404, so `/internal`
+has no route rather than being excluded by a rule that has to be maintained. The gateway
+also strips inbound `X-Internal-Api-Key` and `X-User-Id`, so neither can be smuggled in
+from outside.
+
+**4. Browser clients — CORS, answered at the gateway.** The origin allowlist lives in one
+`map` in `nginx.conf` (`localhost:3000`, `:4200`, `:5173` for the usual dev servers; a
+deployment adds its own). The origin is echoed rather than answered with `*`, and an
+unlisted origin simply gets no `Access-Control-Allow-Origin` — the request is not served
+differently, it is only unreadable by the page. Preflight `OPTIONS` is answered at the
+edge with 204 rather than proxied, because a preflight never carries the `Authorization`
+header and every service would reject it before the real request was sent. The headers
+are set `always`, so a browser can still read the body of a deliberate 401 or 403 instead
+of reporting an opaque CORS failure. `X-Internal-Api-Key` is deliberately not in
+`Access-Control-Allow-Headers`: it is not a browser credential.
 The filter **fails closed**: if no key is configured, every internal request is rejected
 rather than served.
 
@@ -416,12 +436,24 @@ accepted the decision, which is a worse trade than the window it closes.
 
 ## Running Locally
 
-The root compose file runs the whole system — seven services, their seven databases and a broker —
-on one network, with the shared secrets pinned in one place:
+The root compose file runs the whole system — seven services, their seven databases, a broker
+and the gateway — on one network, with the shared secrets pinned in one place:
 
 ```bash
 docker compose up --build
+curl localhost:8080/api/requests      # everything public goes through :8080
 ```
+
+**Only 8080 is published.** The services have no `ports:` mapping, so the security boundary
+in development is the same one an Ingress enforces in production rather than a rule that
+only holds once deployed. Reaching a service directly — which the `/internal` and
+`/actuator` calls need, since neither is routable through the gateway — is opt-in:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.direct.yml up   # republishes 8081-8087
+```
+
+That is the compose equivalent of `kubectl port-forward`: forgetting it fails closed.
 
 The three Java services also compose independently (`cd auth-service && docker compose
 up --build`); request-service and offer-service do not, since each only runs alongside
@@ -493,8 +525,14 @@ classes.
   boundaries, interaction flows).
 - `docs/events.md` — the AMQP contract: topology, envelope, delivery guarantees, and
   which service produces which event.
+- `infrastructure/docker/gateway/nginx.conf` — the routing table: spec section 19's nine
+  public routes, and the default-deny that keeps `/internal` off the edge. A Kubernetes
+  Ingress later expresses the same nine prefixes; `pathType: Prefix` means exactly what the
+  `(/|$)` boundary means here.
 - `postman/marketplace.postman_collection.json` — 116 requests covering every service,
-  the internal APIs, negative cases and health. Run it against a live stack with
+  the internal APIs, negative cases and health. The 82 `/api` requests go through the
+  gateway on `{{gatewayUrl}}`; the 26 `/internal` and 8 `/actuator` requests address a
+  service directly and need `docker-compose.direct.yml`. Run it against a live stack with
   `docker run --rm --network host -v "$PWD/postman":/etc/newman postman/newman:alpine
   run marketplace.postman_collection.json`. It is re-runnable: the customer identity is
   generated per run, because the account update step rewrites that user's email.

@@ -1,10 +1,14 @@
 {
   "info": {
     "name": "Marketplace Microservices",
-    "description": "Auth (8081), Customer (8082), Seller (8083), Request (8084), Offer (8085), Admin/Contact (8086), Notification (8087).\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nRequests under *Internal* send X-Internal-Api-Key. These are service-to-service endpoints and must never be exposed publicly.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
+    "description": "Public /api traffic goes through the gateway on :8080 - the only port the platform publishes. The nine routes it serves are spec section 19.\n\nRequests under *Internal* and the /actuator health checks address a service directly, because spec section 6 keeps /internal off the public gateway and there is deliberately no route to it through :8080. Those need the service ports republished:\n\n    docker compose -f docker-compose.yml -f docker-compose.direct.yml up\n\nRun **Auth > Register customer** then **Auth > Login** first: login stores accessToken/refreshToken/userId as collection variables, and everything else reads them. **Seller > Register + login seller** does the same for the seller role.\n\nThe *Negative cases* folder documents deliberate 401/403 behaviour.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
+    {
+      "key": "gatewayUrl",
+      "value": "http://localhost:8080"
+    },
     {
       "key": "authUrl",
       "value": "http://localhost:8081"
@@ -136,7 +140,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/register/customer",
+            "url": "{{gatewayUrl}}/api/auth/register/customer",
             "description": "Registers a fresh customer on every run. The identity has to be unique because 'Update my account' later rewrites this user's email, and UpdateUserRequest exposes only email and phoneNumber - both unique keys - so a fixed identity makes the collection pass once against an empty database and fail on every re-run.",
             "body": {
               "mode": "raw",
@@ -177,7 +181,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/login",
+            "url": "{{gatewayUrl}}/api/auth/login",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"customer{{runSuffix}}@test.com\",\n  \"password\": \"password123\"\n}"
@@ -209,7 +213,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/login",
+            "url": "{{gatewayUrl}}/api/auth/login",
             "description": "Seeded at startup by AdminBootstrap from ADMIN_PASSWORD.",
             "body": {
               "mode": "raw",
@@ -245,7 +249,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{authUrl}}/api/users/me"
+            "url": "{{gatewayUrl}}/api/users/me"
           },
           "event": [
             {
@@ -275,7 +279,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{authUrl}}/api/users/me",
+            "url": "{{gatewayUrl}}/api/users/me",
             "description": "Rewrites this run's customer email. This is why the identity above is generated per run rather than fixed.",
             "body": {
               "mode": "raw",
@@ -313,7 +317,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{customerUrl}}/api/customers",
+            "url": "{{gatewayUrl}}/api/customers",
             "description": "Calls auth-service internally to confirm the caller's role is CUSTOMER. 403 otherwise.",
             "body": {
               "mode": "raw",
@@ -343,7 +347,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{customerUrl}}/api/customers/me"
+            "url": "{{gatewayUrl}}/api/customers/me"
           },
           "event": [
             {
@@ -371,7 +375,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{customerUrl}}/api/customers/me",
+            "url": "{{gatewayUrl}}/api/customers/me",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"firstName\": \"Mohamed\"\n}"
@@ -404,7 +408,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/register/seller",
+            "url": "{{gatewayUrl}}/api/auth/register/seller",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"seller1@test.com\",\n  \"password\": \"password123\",\n  \"phoneNumber\": \"+21622222222\"\n}"
@@ -436,7 +440,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/login",
+            "url": "{{gatewayUrl}}/api/auth/login",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"seller1@test.com\",\n  \"password\": \"password123\"\n}"
@@ -470,7 +474,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{sellerUrl}}/api/sellers",
+            "url": "{{gatewayUrl}}/api/sellers",
             "description": "userId is NOT accepted in the body - it comes from the token subject.",
             "body": {
               "mode": "raw",
@@ -503,7 +507,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{sellerUrl}}/api/sellers/me",
+            "url": "{{gatewayUrl}}/api/sellers/me",
             "description": "Owner view: includes the address and userId that the public projection withholds."
           },
           "event": [
@@ -539,7 +543,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{sellerUrl}}/api/sellers/me",
+            "url": "{{gatewayUrl}}/api/sellers/me",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"city\": \"Sfax\"\n}"
@@ -562,7 +566,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{sellerUrl}}/api/sellers/{{sellerId}}",
+            "url": "{{gatewayUrl}}/api/sellers/{{sellerId}}",
             "description": "Public projection: no address, no userId. No auth required."
           },
           "event": [
@@ -599,7 +603,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests",
+            "url": "{{gatewayUrl}}/api/requests",
             "description": "The creator becomes participant #1, so totalCustomers is 1 and totalQuantity is their own quantity.",
             "body": {
               "mode": "raw",
@@ -635,7 +639,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/register/customer",
+            "url": "{{gatewayUrl}}/api/auth/register/customer",
             "description": "A second customer, so joining and demand aggregation can be exercised. Its identity is fixed (and 409 on a re-run is fine) because nothing rewrites it, unlike customer 1. The phone must not collide with the seller's +21622222222 - phone numbers are unique across all accounts.",
             "body": {
               "mode": "raw",
@@ -665,7 +669,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/login",
+            "url": "{{gatewayUrl}}/api/auth/login",
             "description": "Captures customer 2's access token.",
             "body": {
               "mode": "raw",
@@ -704,7 +708,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{customerUrl}}/api/customers",
+            "url": "{{gatewayUrl}}/api/customers",
             "description": "request-service resolves the token's userId to a customerId through customer-service, so the profile must exist before joining.",
             "body": {
               "mode": "raw",
@@ -738,7 +742,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}/participants",
             "description": "R2/R3: customer 2 joins with their own quantity. R4: the service recomputes the totals.",
             "body": {
               "mode": "raw",
@@ -776,7 +780,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}/participants",
             "description": "A customer takes part in a request at most once; the second attempt is a conflict.",
             "body": {
               "mode": "raw",
@@ -805,7 +809,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}",
             "description": "Any authenticated user may read demand. Participant identity is never included here."
           },
           "event": [
@@ -841,7 +845,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests?status=OPEN&limit=20",
+            "url": "{{gatewayUrl}}/api/requests?status=OPEN&limit=20",
             "description": "Browsing demand. A seller calls this to find a request worth an offer."
           },
           "event": [
@@ -867,7 +871,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests?q=espresso",
+            "url": "{{gatewayUrl}}/api/requests?q=espresso",
             "description": "Case-insensitive match on the item name."
           },
           "event": [
@@ -894,7 +898,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/me",
+            "url": "{{gatewayUrl}}/api/requests/me",
             "description": "Every request the calling customer takes part in, created or joined."
           },
           "event": [
@@ -927,7 +931,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants/me",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}/participants/me",
             "description": "A customer changes only their own line; the totals are recomputed.",
             "body": {
               "mode": "raw",
@@ -965,7 +969,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests",
+            "url": "{{gatewayUrl}}/api/requests",
             "description": "A separate request, so closing it does not disturb the one folders 6-8 use.",
             "body": {
               "mode": "raw",
@@ -1001,7 +1005,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/participants",
+            "url": "{{gatewayUrl}}/api/requests/{{closableRequestId}}/participants",
             "description": "So the close has more than one participant to notify.",
             "body": {
               "mode": "raw",
@@ -1030,7 +1034,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "url": "{{gatewayUrl}}/api/requests/{{closableRequestId}}/close",
             "description": "Closing withdraws demand other people joined, so it belongs to whoever created it. 403 rather than 404: the caller can already read the request, they just did not create it."
           },
           "event": [
@@ -1055,7 +1059,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "url": "{{gatewayUrl}}/api/requests/{{closableRequestId}}/close",
             "description": "Emits REQUEST_CLOSED to every participant (spec section 18), written to the outbox in the same transaction as the status change."
           },
           "event": [
@@ -1081,7 +1085,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/close",
+            "url": "{{gatewayUrl}}/api/requests/{{closableRequestId}}/close",
             "description": "There is nothing left to close."
           },
           "event": [
@@ -1110,7 +1114,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{closableRequestId}}/participants",
+            "url": "{{gatewayUrl}}/api/requests/{{closableRequestId}}/participants",
             "description": "Once closed, the demand stops moving - which is what the participants were told.",
             "body": {
               "mode": "raw",
@@ -1216,7 +1220,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "R5: validated against request-service before it is stored. R6: starts PENDING whatever the caller asks for.",
             "body": {
               "mode": "raw",
@@ -1254,7 +1258,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "R5: an offer only makes sense against demand that exists.",
             "body": {
               "mode": "raw",
@@ -1283,7 +1287,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "url": "{{gatewayUrl}}/api/offers/{{offerId}}",
             "description": "The owning seller sees their own offer in full."
           },
           "event": [
@@ -1309,7 +1313,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/request/{{requestId}}",
+            "url": "{{gatewayUrl}}/api/offers/request/{{requestId}}",
             "description": "A customer on the request sees the offers in full, so they can see what has been proposed."
           },
           "event": [
@@ -1337,7 +1341,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/me",
+            "url": "{{gatewayUrl}}/api/offers/me",
             "description": "Every offer made by the calling seller."
           },
           "event": [
@@ -1367,7 +1371,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "url": "{{gatewayUrl}}/api/offers/{{offerId}}",
             "description": "Terms can still change while the offer is awaiting review.",
             "body": {
               "mode": "raw",
@@ -1406,7 +1410,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "Only sellers make offers.",
             "body": {
               "mode": "raw",
@@ -1439,7 +1443,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "Identity comes from the token. An unknown field is rejected, not ignored.",
             "body": {
               "mode": "raw",
@@ -1472,7 +1476,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "Currency must be a three-letter ISO-4217 code; the database enforces the same shape.",
             "body": {
               "mode": "raw",
@@ -1501,7 +1505,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/not-a-uuid",
+            "url": "{{gatewayUrl}}/api/offers/not-a-uuid",
             "description": "Reads identically to the Java and Go services."
           },
           "event": [
@@ -1867,7 +1871,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers",
+            "url": "{{gatewayUrl}}/api/offers",
             "description": "A separate offer, so this folder decides one that folder 7 has not already PATCHed.",
             "body": {
               "mode": "raw",
@@ -1897,7 +1901,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "url": "{{gatewayUrl}}/api/contacts/requests/{{requestId}}",
             "description": "R9: approval has not happened, so no permission exists and no number is fetched."
           },
           "event": [
@@ -1924,7 +1928,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "url": "{{gatewayUrl}}/api/admin/offers/pending",
             "description": "Served straight from offer-service, which owns offer state."
           },
           "event": [
@@ -1951,7 +1955,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "url": "{{gatewayUrl}}/api/admin/offers/pending",
             "description": "R7: the decision surface is ADMIN-only."
           },
           "event": [
@@ -1976,7 +1980,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/pending",
+            "url": "{{gatewayUrl}}/api/admin/offers/pending",
             "description": "R7: the decision surface is ADMIN-only."
           },
           "event": [
@@ -2005,7 +2009,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/approve",
+            "url": "{{gatewayUrl}}/api/admin/offers/{{adminOfferId}}/approve",
             "description": "Flow 3: records the decision, relays APPROVED to offer-service, and grants one ContactAccess per customer on the request.",
             "body": {
               "mode": "raw",
@@ -2040,7 +2044,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/{{adminOfferId}}",
+            "url": "{{gatewayUrl}}/api/offers/{{adminOfferId}}",
             "description": "The status change was relayed, so the service that owns offer state agrees."
           },
           "event": [
@@ -2070,7 +2074,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/reject",
+            "url": "{{gatewayUrl}}/api/admin/offers/{{adminOfferId}}/reject",
             "description": "R7: one decision per offer. The second is refused, not silently applied over the audit record.",
             "body": {
               "mode": "raw",
@@ -2099,7 +2103,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "url": "{{gatewayUrl}}/api/contacts/requests/{{requestId}}",
             "description": "Flow 4: the one public endpoint that returns a phone number, and only to a seller holding a GRANTED permission for that request."
           },
           "event": [
@@ -2129,7 +2133,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/contact-access?requestId={{requestId}}",
+            "url": "{{gatewayUrl}}/api/admin/contact-access?requestId={{requestId}}",
             "description": "The audit view of who may reach whom."
           },
           "event": [
@@ -2204,7 +2208,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/contact-access/{{accessId}}",
+            "url": "{{gatewayUrl}}/api/admin/contact-access/{{accessId}}",
             "description": "A status change, not a delete: the row stays as audit history."
           },
           "event": [
@@ -2230,7 +2234,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/contact-access/{{accessId}}",
+            "url": "{{gatewayUrl}}/api/admin/contact-access/{{accessId}}",
             "description": "The grant is no longer GRANTED, so there is nothing to revoke."
           },
           "event": [
@@ -2255,7 +2259,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/contact-access/00000000-0000-0000-0000-000000000000",
+            "url": "{{gatewayUrl}}/api/admin/contact-access/00000000-0000-0000-0000-000000000000",
             "description": "No such grant."
           },
           "event": [
@@ -2280,7 +2284,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/contacts/requests/{{requestId}}",
+            "url": "{{gatewayUrl}}/api/contacts/requests/{{requestId}}",
             "description": "The contact route is the seller's own list, not a general read."
           },
           "event": [
@@ -2309,7 +2313,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/not-a-uuid/approve",
+            "url": "{{gatewayUrl}}/api/admin/offers/not-a-uuid/approve",
             "description": "Same wording as every other service (issue #28).",
             "body": {
               "mode": "raw",
@@ -2344,7 +2348,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/{{adminOfferId}}/approve",
+            "url": "{{gatewayUrl}}/api/admin/offers/{{adminOfferId}}/approve",
             "description": "The verdict comes from the route, never the body; an unknown field is rejected outright.",
             "body": {
               "mode": "raw",
@@ -2377,7 +2381,7 @@
                 "value": "Bearer {{adminAccessToken}}"
               }
             ],
-            "url": "{{adminUrl}}/api/admin/offers/00000000-0000-0000-0000-000000000000/approve",
+            "url": "{{gatewayUrl}}/api/admin/offers/00000000-0000-0000-0000-000000000000/approve",
             "description": "Nothing to decide.",
             "body": {
               "mode": "raw",
@@ -2412,7 +2416,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/me?limit=50",
+            "url": "{{gatewayUrl}}/api/notifications/me?limit=50",
             "description": "Records what is already in the inbox before this folder adds anything.\n\nEarlier folders now produce real notifications: creating and joining a request emits REQUEST_JOINED over AMQP. Asserting absolute counts here would couple this folder to how many events the rest of the collection happens to generate, so everything below is asserted as a delta from this point."
           },
           "event": [
@@ -2651,7 +2655,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/me",
+            "url": "{{gatewayUrl}}/api/notifications/me",
             "description": "The caller's own inbox, newest first. Scoped by the token's sub, never by a parameter."
           },
           "event": [
@@ -2681,7 +2685,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/me/unread-count",
+            "url": "{{gatewayUrl}}/api/notifications/me/unread-count",
             "description": "Backs the unread badge."
           },
           "event": [
@@ -2707,7 +2711,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "url": "{{gatewayUrl}}/api/notifications/{{notificationId}}/read",
             "description": "Only the owner may, and the owner is the token's sub."
           },
           "event": [
@@ -2733,7 +2737,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/me/unread-count",
+            "url": "{{gatewayUrl}}/api/notifications/me/unread-count",
             "description": ""
           },
           "event": [
@@ -2758,7 +2762,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "url": "{{gatewayUrl}}/api/notifications/{{notificationId}}/read",
             "description": "Reading is not a decision: two devices syncing the same inbox is ordinary, so a repeat returns the notification unchanged rather than the 409 a repeated decision gets."
           },
           "event": [
@@ -2784,7 +2788,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/me?unreadOnly=true",
+            "url": "{{gatewayUrl}}/api/notifications/me?unreadOnly=true",
             "description": "The read one drops out of the filter but stays in the inbox."
           },
           "event": [
@@ -2810,7 +2814,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/{{notificationId}}/read",
+            "url": "{{gatewayUrl}}/api/notifications/{{notificationId}}/read",
             "description": "404 rather than 403: answering 403 would confirm the id exists, which would turn this route into an oracle for enumerating other people's notifications."
           },
           "event": [
@@ -2832,7 +2836,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{notificationUrl}}/api/notifications/me",
+            "url": "{{gatewayUrl}}/api/notifications/me",
             "description": "Identity comes from the token, so there is no anonymous inbox."
           },
           "event": [
@@ -2857,7 +2861,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{notificationUrl}}/api/notifications/not-a-uuid/read",
+            "url": "{{gatewayUrl}}/api/notifications/not-a-uuid/read",
             "description": "Same wording as every other service (issue #28)."
           },
           "event": [
@@ -2884,7 +2888,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{authUrl}}/api/users/me"
+            "url": "{{gatewayUrl}}/api/users/me"
           },
           "event": [
             {
@@ -2908,7 +2912,7 @@
                 "value": "Bearer not-a-real-token"
               }
             ],
-            "url": "{{authUrl}}/api/users/me"
+            "url": "{{gatewayUrl}}/api/users/me"
           },
           "event": [
             {
@@ -2932,7 +2936,7 @@
                 "value": "{{userId}}"
               }
             ],
-            "url": "{{customerUrl}}/api/customers/me",
+            "url": "{{gatewayUrl}}/api/customers/me",
             "description": "A caller-supplied header must never prove identity."
           },
           "event": [
@@ -3004,7 +3008,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{sellerUrl}}/api/sellers",
+            "url": "{{gatewayUrl}}/api/sellers",
             "description": "Seller service asks auth-service for the role and rejects non-SELLER.",
             "body": {
               "mode": "raw",
@@ -3033,7 +3037,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{authUrl}}/api/auth/register/customer",
+            "url": "{{gatewayUrl}}/api/auth/register/customer",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"not-an-email\",\n  \"password\": \"short\",\n  \"phoneNumber\": \"nonsense\"\n}"
@@ -3057,7 +3061,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{requestUrl}}/api/requests",
+            "url": "{{gatewayUrl}}/api/requests",
             "description": "Public request endpoints require a bearer token."
           },
           "event": [
@@ -3086,7 +3090,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests",
+            "url": "{{gatewayUrl}}/api/requests",
             "description": "A seller browses demand but must not manufacture it.",
             "body": {
               "mode": "raw",
@@ -3160,7 +3164,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/not-a-uuid",
+            "url": "{{gatewayUrl}}/api/requests/not-a-uuid",
             "description": "A malformed path variable is a client error, not a 500."
           },
           "event": [
@@ -3189,7 +3193,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/11111111-1111-1111-1111-111111111111/participants",
+            "url": "{{gatewayUrl}}/api/requests/11111111-1111-1111-1111-111111111111/participants",
             "description": "An unknown requestId is a 404.",
             "body": {
               "mode": "raw",
@@ -3222,7 +3226,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}/participants",
             "description": "Quantity must be greater than zero.",
             "body": {
               "mode": "raw",
@@ -3255,7 +3259,7 @@
                 "value": "Bearer {{sellerAccessToken}}"
               }
             ],
-            "url": "{{offerUrl}}/api/offers/{{offerId}}",
+            "url": "{{gatewayUrl}}/api/offers/{{offerId}}",
             "description": "Runs after approval: the terms are frozen because contact permission may already have been granted against exactly what the admin saw.",
             "body": {
               "mode": "raw",
@@ -3455,7 +3459,7 @@
                 "value": "Bearer {{customer2AccessToken}}"
               }
             ],
-            "url": "{{requestUrl}}/api/requests/{{requestId}}/participants/me",
+            "url": "{{gatewayUrl}}/api/requests/{{requestId}}/participants/me",
             "description": "Folder 8 approved an offer against this request, which moves it to OFFER_APPROVED. Participants may only change while a request is OPEN: the demand an offer was priced against has to stop moving once that offer has been accepted, or the seller would be held to terms for a quantity that no longer exists."
           },
           "event": [
@@ -3480,7 +3484,7 @@
                 "value": "{{refreshToken}}"
               }
             ],
-            "url": "{{authUrl}}/api/auth/refresh",
+            "url": "{{gatewayUrl}}/api/auth/refresh",
             "description": "Rotates: the presented refresh token is revoked and replaced. Replaying the old one returns 401."
           },
           "event": [
@@ -3514,7 +3518,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "url": "{{authUrl}}/api/auth/logout",
+            "url": "{{gatewayUrl}}/api/auth/logout",
             "description": "Revokes every outstanding refresh token for this user. Refresh afterwards returns 401."
           },
           "event": [

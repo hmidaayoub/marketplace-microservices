@@ -19,6 +19,40 @@ x-db-healthcheck: &db-healthcheck
   retries: 10
 
 services:
+  # The public edge, and the only port this platform publishes. Spec section 19's nine
+  # routes live in one file - infrastructure/docker/gateway/nginx.conf - and spec
+  # section 6's "/internal must not be exposed by the public API Gateway" is enforced by
+  # that file being default-deny, rather than by every service happening to keep its own
+  # port private.
+  #
+  # The service ports below are deliberately unpublished. That is the whole point: the
+  # boundary here is the same one an Ingress enforces in Kubernetes, so it is not a rule
+  # that only holds in production while local development runs wide open. To reach a
+  # service directly - the /internal and /actuator requests in the Postman collection
+  # need to - add the opt-in override:
+  #
+  #   docker compose -f docker-compose.yml -f docker-compose.direct.yml up
+  gateway:
+    image: nginx:1.27-alpine
+    ports: ["8080:8080"]
+    volumes:
+      - ./infrastructure/docker/gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      auth-service: {condition: service_healthy}
+      customer-service: {condition: service_healthy}
+      seller-service: {condition: service_healthy}
+      request-service: {condition: service_healthy}
+      admin-service: {condition: service_healthy}
+      # These two declare no healthcheck of their own, so there is no health to wait on.
+      offer-service: {condition: service_started}
+      notification-service: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
   # Notification events travel over AMQP rather than a direct HTTP call, so a producer
   # never waits on notification-service and a notification is not lost when it is down.
   # The topology itself is declared by the services, not here.
@@ -110,7 +144,6 @@ services:
     build:
       context: .
       dockerfile: auth-service/Dockerfile
-    ports: ["8081:8081"]
     environment:
       <<: *secrets
       DB_HOST: auth-db
@@ -132,7 +165,6 @@ services:
     build:
       context: .
       dockerfile: customer-service/Dockerfile
-    ports: ["8082:8082"]
     environment:
       <<: *secrets
       DB_HOST: customer-db
@@ -154,7 +186,6 @@ services:
     build:
       context: .
       dockerfile: seller-service/Dockerfile
-    ports: ["8083:8083"]
     environment:
       <<: *secrets
       DB_HOST: seller-db
@@ -178,7 +209,6 @@ services:
     build:
       context: .
       dockerfile: request-service/Dockerfile
-    ports: ["8084:8084"]
     environment:
       <<: *secrets
       DB_HOST: request-db
@@ -203,7 +233,6 @@ services:
     build:
       context: .
       dockerfile: offer-service/Dockerfile
-    ports: ["8085:8085"]
     environment:
       <<: *secrets
       DB_HOST: offer-db
@@ -226,7 +255,6 @@ services:
     build:
       context: .
       dockerfile: admin-service/Dockerfile
-    ports: ["8086:8086"]
     environment:
       <<: *secrets
       DB_HOST: admin-db
@@ -261,7 +289,6 @@ services:
     build:
       context: .
       dockerfile: notification-service/Dockerfile
-    ports: ["8087:8087"]
     environment:
       <<: *secrets
       DB_HOST: notification-db
