@@ -190,8 +190,8 @@ who want it. Endpoints follow spec section 10.
 | Method | Endpoint | Who |
 |---|---|---|
 | `POST` | `/api/requests` | CUSTOMER |
-| `GET` | `/api/requests` | any authenticated user |
-| `GET` | `/api/requests/{requestId}` | any authenticated user |
+| `GET` | `/api/requests` | anyone, no token |
+| `GET` | `/api/requests/{requestId}` | anyone, no token |
 | `GET` | `/api/requests/me` | CUSTOMER |
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
 | `PUT` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
@@ -202,8 +202,11 @@ who want it. Endpoints follow spec section 10.
 | `GET` | `/internal/requests/{requestId}/participants` | internal key |
 | `PATCH` | `/internal/requests/{requestId}/status` | internal key |
 
-Browsing is open to any authenticated caller because that is how a seller finds demand
-worth an offer. Everything that records participation is a CUSTOMER action.
+Browsing needs no token at all. It is how a seller finds demand worth an offer, and how
+somebody without an account sees what the platform is before signing up for one. Nothing
+is given away by it: the projection carries aggregate totals and no participant identity,
+which is the same shape an authenticated seller already gets. Everything that records
+participation is a CUSTOMER action and still authenticates.
 
 Rules worth knowing:
 

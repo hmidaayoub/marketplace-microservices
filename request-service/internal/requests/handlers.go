@@ -86,12 +86,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, toResponse(created))
 }
 
-// List handles GET /api/requests. Any authenticated user may browse demand - that is
-// how a seller finds a request worth making an offer against.
+// List handles GET /api/requests. It needs no token: browsing demand is how a seller
+// finds a request worth offering against, and how a visitor sees what the platform is
+// before signing up for it.
 //
 //	@Summary	Browse open demand
-//	@Description Open to any authenticated role, sellers included: this is how a seller
-//	@Description finds a request worth offering against.
+//	@Description Open to everyone, signed in or not. It carries aggregate totals and no
+//	@Description participant identity, so there is nothing here a token would protect.
 //	@Tags		requests
 //	@Produce	json
 //	@Param		q			query		string	false	"Match on item name"
@@ -101,8 +102,6 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 //	@Param		offset		query		int		false	"Rows to skip"		default(0)
 //	@Success	200			{array}		requestResponse
 //	@Failure	400			{object}	httpx.ErrorBody	"Bad paging parameters"
-//	@Failure	401			{object}	httpx.ErrorBody
-//	@Security	bearerAuth
 //	@Router		/api/requests [get]
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -136,16 +135,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 // Get handles GET /api/requests/{requestId}.
 //
 //	@Summary	Read one request with its aggregated demand
-//	@Description Returns totals, not the participant list: who joined is withheld from
-//	@Description the public projection and served only on the internal endpoint.
+//	@Description Open to everyone, signed in or not. Returns totals, not the participant
+//	@Description list: who joined is withheld from the public projection and served only
+//	@Description on the internal endpoint.
 //	@Tags		requests
 //	@Produce	json
 //	@Param		requestId	path		string	true	"Request id"	format(uuid)
 //	@Success	200			{object}	requestResponse
 //	@Failure	400			{object}	httpx.ErrorBody	"Malformed id"
-//	@Failure	401			{object}	httpx.ErrorBody
 //	@Failure	404			{object}	httpx.ErrorBody
-//	@Security	bearerAuth
 //	@Router		/api/requests/{requestId} [get]
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	requestID, ok := pathUUID(w, r, "requestId")

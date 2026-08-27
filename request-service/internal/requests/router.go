@@ -43,25 +43,33 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	})
 
 	r.Route("/api/requests", func(r chi.Router) {
-		r.Use(middleware.RequireJWT(cfg.Verifier))
-
-		// Browsing demand is open to any authenticated user, including sellers.
+		// Reading demand needs no token at all. A visitor has to be able to see what
+		// the platform is before being asked to join it, and there is nothing here to
+		// withhold: requestResponse carries aggregate totals and no participant
+		// identity, which is exactly the projection a seller already gets. Everything
+		// that writes still authenticates, one group down.
+		//
+		// /me is registered below as a static segment, so it is matched ahead of
+		// {requestId} and never reaches this handler.
 		r.Get("/", cfg.Handler.List)
+		r.Get("/{requestId}", cfg.Handler.Get)
 
-		// Everything that records or changes participation is a customer action.
-		r.With(middleware.RequireRole(auth.RoleCustomer)).Post("/", cfg.Handler.Create)
-		r.With(middleware.RequireRole(auth.RoleCustomer)).Get("/me", cfg.Handler.Mine)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.RequireJWT(cfg.Verifier))
 
-		r.Route("/{requestId}", func(r chi.Router) {
-			r.Get("/", cfg.Handler.Get)
+			// Everything that records or changes participation is a customer action.
+			r.With(middleware.RequireRole(auth.RoleCustomer)).Post("/", cfg.Handler.Create)
+			r.With(middleware.RequireRole(auth.RoleCustomer)).Get("/me", cfg.Handler.Mine)
 
+			// Flat patterns rather than a nested Route: {requestId} already carries a
+			// public GET, and mounting a subrouter on the same segment would collide.
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireRole(auth.RoleCustomer))
-				r.Post("/participants", cfg.Handler.Join)
+				r.Post("/{requestId}/participants", cfg.Handler.Join)
 				// Only the creator may close it; the service enforces that.
-				r.Post("/close", cfg.Handler.Close)
-				r.Put("/participants/me", cfg.Handler.UpdateQuantity)
-				r.Delete("/participants/me", cfg.Handler.Leave)
+				r.Post("/{requestId}/close", cfg.Handler.Close)
+				r.Put("/{requestId}/participants/me", cfg.Handler.UpdateQuantity)
+				r.Delete("/{requestId}/participants/me", cfg.Handler.Leave)
 			})
 		})
 	})
