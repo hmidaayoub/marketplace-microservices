@@ -18,10 +18,18 @@ export interface ApiErrorBody {
 export class ApiError extends Error {
   readonly status: number
 
-  constructor(status: number, message: string) {
+  /**
+   * The decoded body, for the errors that carry more than a message - a refused create
+   * hands back the open requests it thinks you meant, and throwing that away would
+   * leave the caller with nothing to offer.
+   */
+  readonly body: unknown
+
+  constructor(status: number, message: string, body?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
@@ -84,7 +92,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
       payload && typeof payload === 'object' && 'message' in payload
         ? String((payload as ApiErrorBody).message)
         : `Request failed with status ${response.status}`
-    throw new ApiError(response.status, message)
+    throw new ApiError(response.status, message, payload)
   }
 
   return payload as T

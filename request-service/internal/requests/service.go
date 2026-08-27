@@ -17,6 +17,24 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/store"
 )
 
+// RequestExistsError refuses a create because the item already has an open request, and
+// carries that request so the caller has somewhere to go. It is a value rather than a
+// sentinel because the request is the point: "this already exists" without saying what
+// leaves the customer with nothing to do about it.
+//
+// This is the only thing that stops a create. A merely similar name does not: whether a
+// close spelling is the same product is a judgement about products, and the service has
+// only the spelling to go on, so those are put to the customer as suggestions and
+// decided by them. The same name is not a judgement - it is the state the platform
+// exists to prevent, and there is nothing for a second request to add.
+type RequestExistsError struct {
+	Existing store.PurchaseRequest
+}
+
+func (e *RequestExistsError) Error() string {
+	return "an open request already carries this item name"
+}
+
 var (
 	ErrRequestNotFound    = errors.New("request not found")
 	ErrNotRequestOwner    = errors.New("caller did not create this request")
@@ -50,6 +68,19 @@ var internalSettableStatuses = map[string]bool{
 	StatusClosed:        true,
 	StatusCancelled:     true,
 }
+
+// How close two item names have to be before the platform offers one as a match.
+//
+// Suggestions only: nothing here refuses a create or joins a request. A customer who
+// means to open their own request opens it, and being shown demand they did not want
+// costs them a glance - so this floor sits low, where it catches a typo or an extra
+// word without needing to be right about it.
+const (
+	SuggestSimilarity float32 = 0.3
+
+	// Enough to recognise the item among; past that it is a list nobody reads.
+	maxSimilar int32 = 5
+)
 
 const uniqueViolation = "23505"
 
@@ -97,10 +128,38 @@ type ListFilter struct {
 // Create opens a request and enrolls its creator as the first participant, in one
 // transaction. R1 and R3 travel together: a customer creates a request because they
 // want some quantity of the item, so a request never exists with nobody wanting it.
-func (s *Service) Create(ctx context.Context, customerID uuid.UUID, in CreateInput) (store.PurchaseRequest, error) {
+//
+// Except when that item is already open demand. Two requests for "Espresso Machine"
+// split the number a seller bids against, which is the number the whole platform exists
+// to build, so there is nothing for the second one to create - it is refused and handed
+// the request that exists. Joining it is then the customer's own call, made through the
+// participants endpoint: being quietly enrolled in a stranger's request because a name
+// collided is not what anybody asked for.
+//
+// A merely similar name is not refused. Whether "Espresso Machine Pro" is the same
+// product is a judgement this has only the spelling to make, so those reach the customer
+// as suggestions while they type - see SimilarOpen - and they decide.
+func (s *Service) Create(
+	ctx context.Context, customerID uuid.UUID, in CreateInput,
+) (store.PurchaseRequest, error) {
 	var created store.PurchaseRequest
 
 	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
+		// Before looking, so the answer cannot go stale between the look and the write:
+		// two customers naming the same new item at once would otherwise both find
+		// nothing and both create it.
+		if err := q.LockItemName(ctx, in.ItemName); err != nil {
+			return fmt.Errorf("locking item name: %w", err)
+		}
+
+		existing, err := q.FindOpenRequestByItemName(ctx, in.ItemName)
+		switch {
+		case err == nil:
+			return s.refuseExisting(ctx, q, existing, customerID)
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("looking for an open request for the same item: %w", err)
+		}
+
 		request, err := q.CreateRequest(ctx, store.CreateRequestParams{
 			ItemName:    in.ItemName,
 			Description: in.Description,
@@ -140,6 +199,36 @@ func (s *Service) Create(ctx context.Context, customerID uuid.UUID, in CreateInp
 
 	s.wakeRelay()
 	return created, err
+}
+
+// refuseExisting turns a name collision into the right refusal. A caller who is already
+// in that request is told so plainly - "join this instead" is no use to somebody who
+// already has - and everyone else is handed it to join.
+func (s *Service) refuseExisting(
+	ctx context.Context, q *store.Queries, existing store.PurchaseRequest, customerID uuid.UUID,
+) error {
+	_, err := q.GetParticipant(ctx, store.GetParticipantParams{
+		RequestID:  existing.RequestID,
+		CustomerID: customerID,
+	})
+	switch {
+	case err == nil:
+		return ErrAlreadyParticipant
+	case !errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("checking existing participation: %w", err)
+	}
+	return &RequestExistsError{Existing: existing}
+}
+
+// SimilarOpen backs the suggestions a customer sees while typing an item name. It is a
+// plain read of open demand - the same projection browsing already serves - so it needs
+// no token and takes no lock.
+func (s *Service) SimilarOpen(ctx context.Context, itemName string, minScore float32) ([]store.FindSimilarOpenRequestsRow, error) {
+	return s.queries.FindSimilarOpenRequests(ctx, store.FindSimilarOpenRequestsParams{
+		ItemName:    itemName,
+		MinScore:    minScore,
+		ResultLimit: maxSimilar,
+	})
 }
 
 func (s *Service) Get(ctx context.Context, requestID uuid.UUID) (store.PurchaseRequest, error) {

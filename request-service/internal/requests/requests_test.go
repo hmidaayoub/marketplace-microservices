@@ -3,6 +3,7 @@ package requests
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +120,349 @@ func TestCreateRequest_sendsInternalApiKeyToCustomerService(t *testing.T) {
 
 	if h.sawAPIKey != testInternalAPIKey {
 		t.Fatalf("customer-service saw api key %q, want %q", h.sawAPIKey, testInternalAPIKey)
+	}
+}
+
+// --- one item, one request --------------------------------------------------------
+
+// Demand only pools if it lands in one place, so there is no second request to create.
+// The customer is told so and handed the one that exists - joining it is their own act,
+// not something done to them because a name matched.
+func TestCreateRequest_refusesASecondRequestForTheSameItem(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	_, second := h.newCustomer()
+
+	requestID := h.createRequest(first, "Espresso Machine", 3)
+
+	res := h.do(http.MethodPost, "/api/requests", second,
+		`{"itemName":"Espresso Machine","description":"mine","category":"other","quantity":5}`)
+
+	if res.code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", res.code, res.raw)
+	}
+
+	existing, ok := res.body["existing"].(map[string]any)
+	if !ok {
+		t.Fatalf("no existing request to join in the refusal: %s", res.raw)
+	}
+	if existing["requestId"] != requestID {
+		t.Errorf("existing = %v, want %s", existing["requestId"], requestID)
+	}
+
+	// Nothing was created, and nothing was joined behind the customer's back.
+	list := h.do(http.MethodGet, "/api/requests", "", "")
+	if len(list.list) != 1 {
+		t.Errorf("browse returns %d requests, want 1: %s", len(list.list), list.raw)
+	}
+	if got := num(t, list.list[0], "totalCustomers"); got != 1 {
+		t.Errorf("totalCustomers = %d, want 1 - the caller must not have been enrolled", got)
+	}
+}
+
+// Nobody types an item name the same way twice, and none of these spellings is a
+// different product: case, spacing and punctuation all normalize away.
+func TestCreateRequest_refusesEverySpellingOfTheSameName(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	requestID := h.createRequest(first, "Espresso Machine", 3)
+
+	for _, name := range []string{
+		"  espresso MACHINE ",
+		"Espresso-Machine!",
+		// Condition, packaging and the model year say nothing about which product it
+		// is, so they leave the key entirely and this is the same name, not a near one.
+		"Espresso Machine (brand new)",
+		"Original Espresso Machine 2024",
+		"the espresso machine, sealed",
+	} {
+		_, other := h.newCustomer()
+		res := h.do(http.MethodPost, "/api/requests", other,
+			fmt.Sprintf(`{"itemName":%q,"quantity":1}`, name))
+
+		if res.code != http.StatusConflict {
+			t.Fatalf("%q: status = %d, want 409; body %s", name, res.code, res.raw)
+		}
+		if got := res.body["existing"].(map[string]any)["requestId"]; got != requestID {
+			t.Errorf("%q: existing = %v, want %s", name, got, requestID)
+		}
+	}
+}
+
+// An abbreviation shares almost no trigrams with what it abbreviates - "ps5" against
+// "playstation 5" scores .06 - so no similarity threshold would ever reach this.
+// Resolving the word does, which makes it the same name and refuses it as one.
+func TestCreateRequest_refusesThroughAnAbbreviation(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	_, second := h.newCustomer()
+
+	requestID := h.createRequest(first, "PlayStation 5", 2)
+	res := h.do(http.MethodPost, "/api/requests", second, `{"itemName":"PS5","quantity":1}`)
+
+	if res.code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", res.code, res.raw)
+	}
+	if got := res.body["existing"].(map[string]any)["requestId"]; got != requestID {
+		t.Errorf("existing = %v, want %s", got, requestID)
+	}
+}
+
+// Asking twice for the same item is the same conflict as joining twice - and it says so
+// rather than offering them a request they are already in.
+func TestCreateRequest_refusesAnItemTheCallerHasAlreadyAskedFor(t *testing.T) {
+	h := newHarness(t)
+	_, token := h.newCustomer()
+	h.createRequest(token, "Espresso Machine", 3)
+
+	res := h.do(http.MethodPost, "/api/requests", token,
+		`{"itemName":"Espresso Machine","quantity":5}`)
+
+	if res.code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", res.code, res.raw)
+	}
+	if _, offered := res.body["existing"]; offered {
+		t.Error("offered a request to join that the caller is already in")
+	}
+}
+
+// A name made of nothing but filler still has to key to something of its own, or every
+// such name would collide with every other.
+func TestCreateRequest_keepsANameThatIsEntirelyFiller(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	_, second := h.newCustomer()
+
+	h.createRequest(first, "New", 1)
+	res := h.do(http.MethodPost, "/api/requests", second, `{"itemName":"2024","quantity":1}`)
+
+	if res.code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: two names that merely emptied out are not one product; body %s",
+			res.code, res.raw)
+	}
+}
+
+// Only open demand pools. A closed request is not something a customer can join, so
+// naming it again opens a fresh one rather than failing.
+func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsClosed(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, other := h.newCustomer()
+
+	closedID := h.createRequest(owner, "Espresso Machine", 3)
+	if res := h.do(http.MethodPost, "/api/requests/"+closedID+"/close", owner, ""); res.code != http.StatusOK {
+		t.Fatalf("closing: status %d body %s", res.code, res.raw)
+	}
+
+	res := h.do(http.MethodPost, "/api/requests", other,
+		`{"itemName":"Espresso Machine","quantity":1}`)
+
+	if res.code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
+	}
+	if got := res.body["requestId"]; got == closedID {
+		t.Error("matched the closed request instead of opening a new one")
+	}
+}
+
+// The lookup alone would let two simultaneous creates both find nothing and both open a
+// request, splitting the demand the refusal exists to protect. The name is locked for
+// the length of the transaction so the losers of the race are refused rather than served.
+func TestCreateRequest_concurrentCreatesOfTheSameItemProduceOneRequest(t *testing.T) {
+	h := newHarness(t)
+
+	const customers = 8
+	tokens := make([]string, customers)
+	for i := range tokens {
+		_, tokens[i] = h.newCustomer()
+	}
+
+	var wg sync.WaitGroup
+	for i, token := range tokens {
+		wg.Add(1)
+		go func(i int, token string) {
+			defer wg.Done()
+			h.do(http.MethodPost, "/api/requests", token,
+				fmt.Sprintf(`{"itemName":"Bulk Coffee","quantity":%d}`, i+1))
+		}(i, token)
+	}
+	wg.Wait()
+
+	list := h.do(http.MethodGet, "/api/requests", "", "")
+	if len(list.list) != 1 {
+		t.Fatalf("browse returns %d requests, want 1: %s", len(list.list), list.raw)
+	}
+	// Exactly one create won; the other seven were refused and told to join it.
+	if got := num(t, list.list[0], "totalCustomers"); got != 1 {
+		t.Errorf("totalCustomers = %d, want 1", got)
+	}
+}
+
+// --- names that are merely close ---------------------------------------------------
+//
+// None of these is refused. Whether a close spelling is the same product is a judgement
+// about products, and the service has only the spelling to go on, so it offers the
+// matches through /api/requests/similar and the customer decides. What these fix is
+// that the customer is never surprised: the request they might have meant is in front
+// of them before they submit.
+
+func TestCreateRequest_allowsANameThatMerelyLooksLikeOpenDemand(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	h.createRequest(first, "Espresso Machine", 3)
+
+	for _, name := range []string{
+		"Espreso Machine",             // a typo
+		"Espresso Machine Pro Deluxe", // the same words and more
+		"Espresso Machine Stand",      // a different product named after it
+	} {
+		_, other := h.newCustomer()
+		res := h.do(http.MethodPost, "/api/requests", other,
+			fmt.Sprintf(`{"itemName":%q,"quantity":1}`, name))
+
+		if res.code != http.StatusCreated {
+			t.Errorf("%q: status = %d, want 201 - a close name is a suggestion, not a refusal; body %s",
+				name, res.code, res.raw)
+		}
+	}
+}
+
+// ...but every one of them is offered to the customer first.
+func TestSimilarRequests_offersTheNamesACreateWillNotRefuse(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	requestID := h.createRequest(first, "Espresso Machine", 3)
+
+	for _, typed := range []string{"Espreso Machine", "Espresso Machine Pro Deluxe", "espresso machine"} {
+		res := h.do(http.MethodGet, "/api/requests/similar?itemName="+url.QueryEscape(typed), "", "")
+
+		if res.code != http.StatusOK {
+			t.Fatalf("%q: status = %d, want 200; body %s", typed, res.code, res.raw)
+		}
+		if len(res.list) == 0 {
+			t.Fatalf("%q: nothing suggested, so the customer meets the request only by accident", typed)
+		}
+		if got := res.list[0]["requestId"]; got != requestID {
+			t.Errorf("%q: first suggestion = %v, want %s", typed, got, requestID)
+		}
+	}
+}
+
+// The suggestion carries whether it is the same name outright, so the form can say "join
+// this, you cannot open another" before the customer submits and learns it from a 409.
+func TestSimilarRequests_marksTheSuggestionThatIsTheSameName(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	h.createRequest(first, "Espresso Machine", 3)
+
+	exact := h.do(http.MethodGet, "/api/requests/similar?itemName="+url.QueryEscape("Espresso-Machine!"), "", "")
+	if len(exact.list) != 1 || exact.list[0]["exact"] != true {
+		t.Errorf("exact = %v, want true for the same name spelled differently: %s",
+			exact.list[0]["exact"], exact.raw)
+	}
+
+	near := h.do(http.MethodGet, "/api/requests/similar?itemName="+url.QueryEscape("Espresso Machine Pro"), "", "")
+	if len(near.list) != 1 {
+		t.Fatalf("returned %d matches, want 1: %s", len(near.list), near.raw)
+	}
+	if got := near.list[0]["exact"]; got != nil {
+		t.Errorf("exact = %v, want it absent - this one may still be created", got)
+	}
+}
+
+// Names far enough apart are two products, and nobody should hear about them.
+func TestCreateRequest_leavesAnUnrelatedNameAlone(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	_, second := h.newCustomer()
+	h.createRequest(first, "Espresso Machine", 3)
+
+	res := h.do(http.MethodPost, "/api/requests", second, `{"itemName":"Standing Desk","quantity":1}`)
+
+	if res.code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
+	}
+
+	suggestions := h.do(http.MethodGet, "/api/requests/similar?itemName=Standing+Desk", "", "")
+	for _, got := range suggestions.list {
+		if got["itemName"] == "Espresso Machine" {
+			t.Error("suggested an espresso machine to somebody asking for a desk")
+		}
+	}
+}
+
+// Model qualifiers are not noise: they are the whole difference between two products,
+// and stripping one would refuse demand that was never for the same thing.
+func TestCreateRequest_keepsModelQualifiersApart(t *testing.T) {
+	h := newHarness(t)
+	_, first := h.newCustomer()
+	_, second := h.newCustomer()
+
+	requestID := h.createRequest(first, "iPhone 15", 1)
+
+	res := h.do(http.MethodPost, "/api/requests", second, `{"itemName":"iPhone 15 Pro","quantity":1}`)
+
+	if res.code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
+	}
+	if got := res.body["requestId"]; got == requestID {
+		t.Error("a Pro is a different product")
+	}
+}
+
+// --- the suggestion endpoint ------------------------------------------------------
+
+func TestSimilarRequests_ranksNearMatchesAndNeedsNoToken(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	_, other := h.newCustomer()
+
+	espresso := h.createRequest(creator, "Espresso Machine", 3)
+	h.createRequest(other, "Standing Desk", 1)
+
+	res := h.do(http.MethodGet, "/api/requests/similar?itemName=espreso+machin", "", "")
+
+	if res.code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", res.code, res.raw)
+	}
+	if len(res.list) != 1 {
+		t.Fatalf("returned %d matches, want only the espresso machine: %s", len(res.list), res.raw)
+	}
+	if res.list[0]["requestId"] != espresso {
+		t.Errorf("requestId = %v, want %s", res.list[0]["requestId"], espresso)
+	}
+	if _, ok := res.list[0]["similarity"].(float64); !ok {
+		t.Errorf("no similarity score to rank by: %v", res.list[0])
+	}
+	// Same projection browsing serves: totals, never participants.
+	if _, leaked := res.list[0]["customerIds"]; leaked {
+		t.Error("the suggestion carries participant identity")
+	}
+}
+
+func TestSimilarRequests_requiresAnItemName(t *testing.T) {
+	h := newHarness(t)
+
+	for _, path := range []string{"/api/requests/similar", "/api/requests/similar?itemName=++"} {
+		res := h.do(http.MethodGet, path, "", "")
+		if res.code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body %s", path, res.code, res.raw)
+		}
+	}
+}
+
+func TestSimilarRequests_returnsAnEmptyListWhenNothingIsClose(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	h.createRequest(creator, "Espresso Machine", 3)
+
+	res := h.do(http.MethodGet, "/api/requests/similar?itemName=bicycle", "", "")
+
+	if res.code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", res.code, res.raw)
+	}
+	if len(res.list) != 0 {
+		t.Errorf("returned %d matches, want none: %s", len(res.list), res.raw)
 	}
 }
 

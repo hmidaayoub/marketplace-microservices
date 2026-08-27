@@ -192,6 +192,7 @@ who want it. Endpoints follow spec section 10.
 | `POST` | `/api/requests` | CUSTOMER |
 | `GET` | `/api/requests` | anyone, no token |
 | `GET` | `/api/requests/{requestId}` | anyone, no token |
+| `GET` | `/api/requests/similar` | anyone, no token |
 | `GET` | `/api/requests/me` | CUSTOMER |
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
 | `PUT` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
@@ -212,6 +213,57 @@ Rules worth knowing:
 
 - **Creating a request enrolls its creator** as the first participant (R1 + R3). A
   request never exists that nobody wants, so demand starts at one customer.
+- **One item, one request — the same name cannot be created twice.** A create whose item
+  name already belongs to an open request is refused with `409`, and that request comes
+  back in the response as `existing` for the customer to join. Demand only pools if it
+  lands in one place, and two requests for "Espresso Machine" split the number a seller
+  is bidding against, so there is nothing for the second one to create. Asking again for
+  something you already asked for is the same `409` with no `existing`, because offering
+  somebody a request they are already in is no use to them. Only `OPEN` requests match —
+  a closed one cannot be joined, so naming it opens a fresh request. The name is locked
+  for the length of the transaction (`pg_advisory_xact_lock`), so two customers naming
+  the same new item at once cannot both find nothing and both create. Because the name
+  carries this weight, it is all the create form asks for besides a quantity; the
+  description and category belong to whoever opened the request.
+- **Nothing is ever joined on the customer's behalf.** The refusal hands them a request;
+  the join is their own call to `POST /api/requests/{id}/participants`. Being quietly
+  enrolled in a stranger's request because a name collided is not what anybody asked for,
+  and the difference between "your request is open" and "you are now part of someone
+  else's" is too large to infer from a string comparison.
+- **What counts as "the same name" is `request_item_key(item_name)`**, an `IMMUTABLE`
+  function the indexes are built on. It case-folds, flattens every run of punctuation or
+  whitespace to one space, resolves a small list of abbreviations (`ps5` →
+  `playstation 5`, `fridge` → `refrigerator`), and drops words that describe a condition
+  rather than a product (`new`, `brand`, `sealed`, `used`, articles) along with any model
+  year. So "Espresso Machine", "espresso  machine", "Espresso-Machine!", "Espresso
+  Machine (brand new)" and "Original Espresso Machine 2024" are one name, and `PS5` and
+  `PlayStation 5` are another. Two deliberate limits: the alias list is short, because it
+  merges requests outright and so earns its entries conservatively; and model qualifiers
+  are never dropped, because `pro`, `max` and `mini` are the whole difference between two
+  products. A name made only of noise keeps its plain form rather than keying to empty
+  and colliding with every other such name.
+- **Names that are merely close are suggested, never refused.**
+  `GET /api/requests/similar?itemName=…` ranks open demand against what is being typed
+  and the new-request form shows it live, each match with a *Join* button, before the
+  customer submits. Two signals feed it, both over partial GIN indexes on open demand:
+  `pg_trgm` similarity at ≥ 0.3, which is what finds a typo, and whole-word containment
+  with at least two words on the shorter side, which is what finds the same product with
+  more said about it. Containment is a separate signal rather than a lower threshold
+  because scoring cannot express it — "Espresso Machine" reaches only **.515** against
+  "Espresso Machine Pro Deluxe 2024", below the **.538** that "Laptop" reaches against
+  the genuinely different "Laptop Stand". The two-word floor is what separates those:
+  a single word is a category far more often than an item, so "Laptop"/"Laptop Stand"
+  never triggers it.
+
+  None of this stops a create, because **a false merge is worse than a duplicate** — a
+  duplicate splits the total, but a merge has a seller bidding against demand that was
+  never for their product. Whether a close spelling is the same product is a judgement
+  about products, and the service has only the spelling to go on, so it puts the matches
+  in front of the person who can tell and they decide. What it guarantees is that the
+  customer is never surprised: the request they might have meant is on screen before
+  they submit. Each suggestion carries `similarity` and, when it is the same name
+  outright, `exact` — which is how the form knows to withhold the create button and
+  offer only *Join*.
 - **`totalCustomers` and `totalQuantity` are never written by a caller** (R4). Every
   participant change recomputes them from `request_participant` in the same transaction,
   behind a `SELECT ... FOR UPDATE` on the request row — without that lock, concurrent
