@@ -6,7 +6,7 @@ import {
   ContactIcon,
   GavelIcon,
   KeyIcon,
-  LayoutGridIcon,
+  LogInIcon,
   LogOutIcon,
   MenuIcon,
   ReceiptTextIcon,
@@ -14,7 +14,7 @@ import {
   StoreIcon,
   type LucideIcon,
 } from 'lucide-react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { ModeToggle } from '@/components/mode-toggle'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -44,18 +44,16 @@ interface NavItem {
   icon: LucideIcon
 }
 
+// No Browse entry: the Marketplace mark beside it already goes to the request list, and
+// two links to the same page next to each other is one too many. A signed-out visitor
+// therefore has no nav at all - the mark is the whole of it.
 const LINKS: Record<string, NavItem[]> = {
-  CUSTOMER: [
-    { to: '/requests', label: 'Browse', icon: LayoutGridIcon },
-    { to: '/my-requests', label: 'My requests', icon: ScrollTextIcon },
-  ],
+  CUSTOMER: [{ to: '/my-requests', label: 'My requests', icon: ScrollTextIcon }],
   SELLER: [
-    { to: '/requests', label: 'Browse', icon: LayoutGridIcon },
     { to: '/my-offers', label: 'My offers', icon: ReceiptTextIcon },
     { to: '/contacts', label: 'Contacts', icon: ContactIcon },
   ],
   ADMIN: [
-    { to: '/requests', label: 'Browse', icon: LayoutGridIcon },
     { to: '/admin/queue', label: 'Approval queue', icon: GavelIcon },
     { to: '/admin/access', label: 'Contact access', icon: KeyIcon },
   ],
@@ -80,6 +78,7 @@ function initials(name: string) {
 export default function AppLayout() {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
+  const location = useLocation()
   const user = useAppSelector((s) => s.auth.user)
   // A customer is a person and a seller is a store; only an admin, who has no profile,
   // falls back to their email address.
@@ -101,7 +100,7 @@ export default function AppLayout() {
     navigate('/login')
   }
 
-  const notifications = (
+  const notifications = user && (
     <NavLink to="/notifications" className={navClass} onClick={() => setMenuOpen(false)}>
       <BellIcon />
       Notifications
@@ -120,7 +119,12 @@ export default function AppLayout() {
           {/* The sheet is unmounted while closed, so the nav links exist exactly once. */}
           <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open menu">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={cn('md:hidden', !user && 'hidden')}
+                aria-label="Open menu"
+              >
                 <MenuIcon />
               </Button>
             </SheetTrigger>
@@ -155,7 +159,9 @@ export default function AppLayout() {
             <span className="hidden sm:inline">Marketplace</span>
           </NavLink>
 
-          <Separator orientation="vertical" className="mx-1 hidden h-5! md:block" />
+          {links.length > 0 && (
+            <Separator orientation="vertical" className="mx-1 hidden h-5! md:block" />
+          )}
 
           <nav className="hidden flex-1 items-center gap-1 md:flex">
             {links.map((link) => (
@@ -169,36 +175,53 @@ export default function AppLayout() {
 
           <div className="ml-auto flex items-center gap-1 md:ml-0">
             <ModeToggle />
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2 px-1.5">
-                  <Avatar className="size-6">
-                    <AvatarFallback className="text-[0.625rem]">
-                      {initials(displayName)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="hidden max-w-44 truncate sm:inline">{displayName}</span>
+
+            {user ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="gap-2 px-1.5">
+                    <Avatar className="size-6">
+                      <AvatarFallback className="text-[0.625rem]">
+                        {initials(displayName)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="hidden max-w-44 truncate sm:inline">{displayName}</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-60">
+                  <DropdownMenuLabel className="flex flex-col gap-0.5">
+                    <span className="truncate font-medium">{displayName}</span>
+                    {/* The email is what you sign in with, so it stays one level down
+                        rather than disappearing. */}
+                    <span className="truncate text-xs font-normal text-muted-foreground">
+                      {user.email}
+                    </span>
+                    <span className="text-xs font-normal text-muted-foreground">
+                      Signed in as {user.role?.toLowerCase()}
+                    </span>
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={signOut}>
+                    <LogOutIcon />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <>
+                {/* Where the visitor is standing rides along, so signing in returns them
+                    to the request they were looking at rather than to the top of the list. */}
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/login" state={{ from: location }}>
+                    <LogInIcon />
+                    Sign in
+                  </Link>
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-60">
-                <DropdownMenuLabel className="flex flex-col gap-0.5">
-                  <span className="truncate font-medium">{displayName}</span>
-                  {/* The email is what you sign in with, so it stays one level down
-                      rather than disappearing. */}
-                  <span className="truncate text-xs font-normal text-muted-foreground">
-                    {user?.email}
-                  </span>
-                  <span className="text-xs font-normal text-muted-foreground">
-                    Signed in as {user?.role?.toLowerCase()}
-                  </span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onSelect={signOut}>
-                  <LogOutIcon />
-                  Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                <Button size="sm" asChild>
+                  <Link to="/register">Create account</Link>
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </header>

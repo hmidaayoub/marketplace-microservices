@@ -42,16 +42,21 @@ export default function App() {
         }
       />
 
-      <Route
-        element={
-          <ProtectedRoute>
-            <AppLayout />
-          </ProtectedRoute>
-        }
-      >
+      {/* The shell itself is not gated. Browsing demand is the one thing a visitor may
+          do before signing up - everything under it that writes, or that is somebody's
+          own data, still carries its own guard. */}
+      <Route element={<AppLayout />}>
         <Route path="/requests" element={<BrowseRequests />} />
         <Route path="/requests/:id" element={<RequestDetail />} />
-        <Route path="/notifications" element={<Notifications />} />
+
+        <Route
+          path="/notifications"
+          element={
+            <ProtectedRoute>
+              <Notifications />
+            </ProtectedRoute>
+          }
+        />
 
         <Route
           path="/my-requests"

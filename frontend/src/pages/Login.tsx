@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { LogInIcon } from 'lucide-react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 
 import { AuthShell } from '@/components/auth-shell'
 import { ErrorAlert } from '@/components/error-alert'
@@ -14,11 +14,16 @@ import { loadSession, login } from '@/store/authSlice'
 export default function Login() {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
+  const location = useLocation()
   const { status, error } = useAppSelector((s) => s.auth)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
   const busy = status === 'loading'
+
+  // Whoever sent them here - a route guard, or a "sign in to join" button on a request -
+  // put the page they were on in the location state. Signing in returns them to it.
+  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -27,7 +32,7 @@ export default function Login() {
       // The profile check rides along with the session load, so the guard knows where
       // to send this account before the first page renders.
       await dispatch(loadSession())
-      navigate('/requests')
+      navigate(from ?? '/requests', { replace: true })
     }
   }
 

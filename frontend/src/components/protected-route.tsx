@@ -1,6 +1,10 @@
 /**
  * Gates a route on a session, a role, and - the easy one to miss - a role profile.
  *
+ * It wraps individual routes rather than the whole shell: browsing demand is public, so
+ * the layout renders for a signed-out visitor and only the pages that write, or that are
+ * somebody's own data, are behind this.
+ *
  * Registering creates a user but not the CUSTOMER or SELLER profile the business
  * services resolve the caller through, so a freshly registered account gets 403 from
  * every write until it exists. Rather than surface that as an error, the guard routes
@@ -26,10 +30,12 @@ export default function ProtectedRoute({
 
   if (!accessToken) return <Navigate to="/login" state={{ from: location }} replace />
 
-  // The session is restored from storage before /api/users/me has answered.
+  // The session is restored from storage before /api/users/me has answered. This renders
+  // both inside the shell and standalone on /profile, so it centres on its own box
+  // rather than on the viewport.
   if (!user) {
     return (
-      <div className="flex min-h-svh flex-col items-center justify-center gap-3 text-muted-foreground">
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground">
         <Spinner className="size-5" />
         <p className="text-sm">Loading your session…</p>
       </div>
