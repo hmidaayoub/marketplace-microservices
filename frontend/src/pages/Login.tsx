@@ -47,6 +47,11 @@ export default function Login() {
           <Link to="/register" className="font-medium text-primary hover:underline">
             Register
           </Link>
+          <br />
+          <Link to="/requests" className="font-medium text-primary hover:underline">
+            Browse requests
+          </Link>{' '}
+          without an account
         </>
       }
     >
