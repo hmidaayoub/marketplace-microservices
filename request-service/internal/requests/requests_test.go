@@ -349,6 +349,72 @@ func TestListRequests_rejectsOversizedPage(t *testing.T) {
 	}
 }
 
+// Browsing is the one thing a visitor may do before signing up: they have to be able
+// to see what the platform is before being asked to join it.
+func TestBrowsingDemand_needsNoToken(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	requestID := h.createRequest(creator, "Espresso Machine", 3)
+
+	list := h.do(http.MethodGet, "/api/requests?q=espresso", "", "")
+	if list.code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200; body %s", list.code, list.raw)
+	}
+	if len(list.list) != 1 {
+		t.Fatalf("got %d results, want 1: %s", len(list.list), list.raw)
+	}
+
+	one := h.do(http.MethodGet, "/api/requests/"+requestID, "", "")
+	if one.code != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200; body %s", one.code, one.raw)
+	}
+	// Opening the read must not have widened the projection: an anonymous caller sees
+	// exactly what an authenticated seller sees, which is totals and no participants.
+	for _, forbidden := range []string{"customerIds", "customerId", "participants"} {
+		if _, present := one.body[forbidden]; present {
+			t.Errorf("anonymous request detail must not carry %q: %s", forbidden, one.raw)
+		}
+	}
+}
+
+// The reads opened; nothing else did.
+func TestWritingDemand_stillRejectsUnauthenticated(t *testing.T) {
+	h := newHarness(t)
+	_, creator := h.newCustomer()
+	requestID := h.createRequest(creator, "Blender", 2)
+
+	for _, call := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/api/requests", `{"itemName":"x","quantity":1}`},
+		{http.MethodPost, "/api/requests/" + requestID + "/participants", `{"quantity":1}`},
+		{http.MethodPut, "/api/requests/" + requestID + "/participants/me", `{"quantity":2}`},
+		{http.MethodDelete, "/api/requests/" + requestID + "/participants/me", ""},
+		{http.MethodPost, "/api/requests/" + requestID + "/close", ""},
+	} {
+		t.Run(call.method+" "+call.path, func(t *testing.T) {
+			if res := h.do(call.method, call.path, "", call.body); res.code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401; body %s", res.code, res.raw)
+			}
+		})
+	}
+}
+
+// /me is a static segment sharing a position with {requestId}. If it ever stopped
+// winning that match it would fall through to the public read and answer 400 for a
+// malformed id instead of 401 - a private list quietly turned into a public one.
+func TestMyRequests_isNotReachableWithoutAToken(t *testing.T) {
+	h := newHarness(t)
+
+	res := h.do(http.MethodGet, "/api/requests/me", "", "")
+
+	if res.code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body %s", res.code, res.raw)
+	}
+}
+
 func TestMyRequests_returnsJoinedAndCreated(t *testing.T) {
 	h := newHarness(t)
 	_, alice := h.newCustomer()

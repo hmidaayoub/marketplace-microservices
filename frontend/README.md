@@ -54,7 +54,8 @@ caught a wrong assumption about the contact-access shape on the first day.
 ## Testing
 
 ```bash
-npm run e2e        # drives register -> profile -> create a request in a real browser
+npm run e2e         # drives register -> profile -> create a request in a real browser
+npm run e2e:public  # a visitor with no account: browse works, acting asks them to sign in
 ```
 
 It exists because "account creation does not work" was diagnosed three times from the
@@ -65,6 +66,22 @@ user. This is the only check that sees what they see. Failures leave a screensho
 For the backend, `../scripts/smoke.sh` answers whether the platform is up before you
 debug the UI. A **502** from any call means a service is down, not that your code is
 wrong.
+
+## Browsing is public; acting is not
+
+`/requests` and `/requests/:id` render with no session — request-service serves those two
+reads without a token, so the list is real demand rather than a placeholder. Everything
+else is behind `ProtectedRoute`, which now wraps individual routes instead of the whole
+shell.
+
+Where a signed-in user gets an action, a visitor gets the way to earn it: "Sign in to post
+a request" on browse, and a card offering both sign-in and registration on a request. Each
+carries the page they were standing on in the router's location state, and `Login` sends
+them back to it — so "join this request" does not dump you at the top of the list.
+
+Offers on a request stay signed-in-only. That projection depends on who is asking — a
+rival seller gets `sellerId` withheld — so there is no anonymous shape for it, and the
+page does not request one.
 
 ## Two things the backend's design forces on the UI
 

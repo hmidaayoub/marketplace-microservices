@@ -13,12 +13,13 @@ import {
   EyeOffIcon,
   HandshakeIcon,
   LockIcon,
+  LogInIcon,
   LogOutIcon,
   PackageIcon,
   TagIcon,
   UsersIcon,
 } from 'lucide-react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
@@ -36,7 +37,14 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -61,11 +69,15 @@ export default function RequestDetail() {
   const offers = useAppSelector((s) => s.offers.forRequest)
   const offerError = useAppSelector((s) => s.offers.error)
   const user = useAppSelector((s) => s.auth.user)
+  const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
 
   useEffect(() => {
     dispatch(fetchRequest(id))
-    dispatch(fetchOffersForRequest(id))
-  }, [dispatch, id])
+    // The request itself reads publicly; the offers on it do not. Their projection
+    // depends on who is asking - a rival seller gets the sellerId withheld - so there is
+    // no anonymous shape for it, and asking would only earn a 401.
+    if (signedIn) dispatch(fetchOffersForRequest(id))
+  }, [dispatch, id, signedIn])
 
   if (!request) {
     return (
@@ -109,11 +121,30 @@ export default function RequestDetail() {
 
       {user?.role === 'CUSTOMER' && isOpen && <Participation id={id} isOwner={isOwner} />}
       {user?.role === 'SELLER' && isOpen && <OfferForm requestId={id} />}
+      {!signedIn && isOpen && <SignInToTakePart />}
 
       <section className="space-y-3">
-        <h2 className="font-heading text-lg font-medium">Offers ({offers.length})</h2>
+        <h2 className="font-heading text-lg font-medium">
+          Offers{signedIn ? ` (${offers.length})` : ''}
+        </h2>
 
-        {offers.length === 0 ? (
+        {!signedIn ? (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <EyeOffIcon />
+              </EmptyMedia>
+              <EmptyTitle>Offers are visible once you sign in</EmptyTitle>
+              <EmptyDescription>
+                Who has bid, and for how much, is shown differently depending on who is
+                asking — a rival seller does not get to see whose offer is whose.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <SignInButtons />
+            </EmptyContent>
+          </Empty>
+        ) : offers.length === 0 ? (
           <Empty className="border">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -152,6 +183,41 @@ export default function RequestDetail() {
         )}
       </section>
     </div>
+  )
+}
+
+/** Both ways in, carrying the page the visitor is standing on. */
+function SignInButtons() {
+  const location = useLocation()
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button asChild>
+        <Link to="/login" state={{ from: location }}>
+          <LogInIcon />
+          Sign in
+        </Link>
+      </Button>
+      <Button variant="outline" asChild>
+        <Link to="/register">Create an account</Link>
+      </Button>
+    </div>
+  )
+}
+
+function SignInToTakePart() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Join this request, or offer against it</CardTitle>
+        <CardDescription>
+          Buyers add their quantity to the total; sellers bid against that total. Both need an
+          account — looking does not.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <SignInButtons />
+      </CardContent>
+    </Card>
   )
 }
 

@@ -1,8 +1,8 @@
 /** Open demand. Any authenticated role may browse - that is how a seller finds work. */
 
 import { useEffect, useState } from 'react'
-import { PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { LogInIcon, PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
+import { Link, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
@@ -44,6 +44,10 @@ export default function BrowseRequests() {
   const dispatch = useAppDispatch()
   const { browse, loading, error } = useAppSelector((s) => s.requests)
   const role = useAppSelector((s) => s.auth.user?.role)
+  // The token, not the role: mid session-restore there is a token but no role yet, and
+  // flashing "sign in" at somebody who already is would be worse than showing nothing.
+  const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
+  const location = useLocation()
   const [filters, setFilters] = useState<{ q: string; status: RequestStatus | typeof ANY }>({
     q: '',
     status: 'OPEN',
@@ -70,6 +74,18 @@ export default function BrowseRequests() {
         description="Every request buyers have pooled. Sellers bid against the combined total, not one buyer's quantity."
       >
         {role === 'CUSTOMER' && <NewRequestDialog />}
+
+        {/* Anyone may look; posting needs an account. The button is offered rather than
+            hidden, because "you cannot do this yet" is more useful than a missing
+            control - and it carries the way back here. */}
+        {!signedIn && (
+          <Button size="lg" asChild>
+            <Link to="/login" state={{ from: location }}>
+              <LogInIcon />
+              Sign in to post a request
+            </Link>
+          </Button>
+        )}
       </PageHeader>
 
       <Card size="sm">

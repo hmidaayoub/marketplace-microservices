@@ -93,7 +93,7 @@
     "paths": {
         "/api/requests": {
             "get": {
-                "description": "Open to any authenticated role, sellers included: this is how a seller\nfinds a request worth offering against.",
+                "description": "Open to everyone, signed in or not. It carries aggregate totals and no\nparticipant identity, so there is nothing here a token would protect.",
                 "parameters": [
                     {
                         "description": "Match on item name",
@@ -161,23 +161,8 @@
                             }
                         },
                         "description": "Bad paging parameters"
-                    },
-                    "401": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Unauthorized"
                     }
                 },
-                "security": [
-                    {
-                        "bearerAuth": []
-                    }
-                ],
                 "summary": "Browse open demand",
                 "tags": [
                     "requests"
@@ -308,7 +293,7 @@
         },
         "/api/requests/{requestId}": {
             "get": {
-                "description": "Returns totals, not the participant list: who joined is withheld from\nthe public projection and served only on the internal endpoint.",
+                "description": "Open to everyone, signed in or not. Returns totals, not the participant\nlist: who joined is withheld from the public projection and served only\non the internal endpoint.",
                 "parameters": [
                     {
                         "description": "Request id",
@@ -342,16 +327,6 @@
                         },
                         "description": "Malformed id"
                     },
-                    "401": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Unauthorized"
-                    },
                     "404": {
                         "content": {
                             "application/json": {
@@ -363,11 +338,6 @@
                         "description": "Not Found"
                     }
                 },
-                "security": [
-                    {
-                        "bearerAuth": []
-                    }
-                ],
                 "summary": "Read one request with its aggregated demand",
                 "tags": [
                     "requests"

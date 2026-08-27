@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "codegen": "node scripts/codegen.mjs",
-    "e2e": "node e2e/signup.mjs"
+    "e2e": "node e2e/signup.mjs",
+    "e2e:public": "node e2e/public-browse.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
