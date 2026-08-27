@@ -56,6 +56,11 @@ export default function Register() {
           <Link to="/login" className="font-medium text-primary hover:underline">
             Sign in
           </Link>
+          <br />
+          <Link to="/requests" className="font-medium text-primary hover:underline">
+            Browse requests
+          </Link>{' '}
+          without an account
         </>
       }
     >
