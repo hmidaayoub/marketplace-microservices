@@ -8,12 +8,20 @@
  */
 
 import { useState } from 'react'
+import { StoreIcon, UserRoundIcon } from 'lucide-react'
 import { Navigate, useNavigate } from 'react-router-dom'
 
-import { api, ApiError } from '../api/client'
-import { useAppDispatch, useAppSelector } from '../store'
-import { profileCreated } from '../store/authSlice'
-import { Alert, Button, Card, Field, Input } from '../components/ui'
+import { AuthShell } from '@/components/auth-shell'
+import { ErrorAlert } from '@/components/error-alert'
+import { Button } from '@/components/ui/button'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Spinner } from '@/components/ui/spinner'
+import { Textarea } from '@/components/ui/textarea'
+import { api, ApiError } from '@/api/client'
+import type { Customer, Seller } from '@/api/types'
+import { useAppDispatch, useAppSelector } from '@/store'
+import { profileCreated } from '@/store/authSlice'
 
 export default function ProfileSetup() {
   const dispatch = useAppDispatch()
@@ -52,12 +60,14 @@ export default function ProfileSetup() {
         }
       : { firstName: form.firstName, lastName: form.lastName }
     try {
-      await api(isSeller ? '/api/sellers' : '/api/customers', {
+      // The response is the created profile, and it is the only place the account's name
+      // lives - keeping it saves a refetch just to greet them by it.
+      const profile = await api<Customer | Seller>(isSeller ? '/api/sellers' : '/api/customers', {
         method: 'POST',
         body,
         token: accessToken,
       })
-      dispatch(profileCreated())
+      dispatch(profileCreated(profile))
       navigate('/requests')
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save your profile')
@@ -67,50 +77,64 @@ export default function ProfileSetup() {
   }
 
   return (
-    <div className="mx-auto mt-12 max-w-md">
-      <h1 className="mb-2 text-2xl font-semibold">
-        {isSeller ? 'Set up your store' : 'Complete your profile'}
-      </h1>
-      <p className="mb-6 text-sm text-slate-600">
-        Your account exists, but {isSeller ? 'offers' : 'requests'} are made by a profile. This is
-        the last step.
-      </p>
-      <Card>
-        <form onSubmit={submit} className="space-y-4">
+    <AuthShell
+      icon={isSeller ? StoreIcon : UserRoundIcon}
+      title={isSeller ? 'Set up your store' : 'Complete your profile'}
+      description={`Your account exists, but ${
+        isSeller ? 'offers' : 'requests'
+      } are made by a profile. This is the last step.`}
+    >
+      <form onSubmit={submit}>
+        <FieldGroup>
           {isSeller ? (
             <>
-              <Field label="Store name">
-                <Input value={form.storeName} onChange={set('storeName')} required />
+              <Field>
+                <FieldLabel htmlFor="storeName">Store name</FieldLabel>
+                <Input id="storeName" value={form.storeName} onChange={set('storeName')} required />
               </Field>
-              <Field label="What you supply">
-                <Input value={form.description} onChange={set('description')} required />
+              <Field>
+                <FieldLabel htmlFor="description">What you supply</FieldLabel>
+                <Textarea
+                  id="description"
+                  value={form.description}
+                  onChange={set('description')}
+                  rows={3}
+                  required
+                />
               </Field>
-              <Field label="City">
-                <Input value={form.city} onChange={set('city')} required />
+              <Field>
+                <FieldLabel htmlFor="city">City</FieldLabel>
+                <Input id="city" value={form.city} onChange={set('city')} required />
               </Field>
-              <Field label="Address">
-                <Input value={form.address} onChange={set('address')} required />
+              <Field>
+                <FieldLabel htmlFor="address">Address</FieldLabel>
+                <Input id="address" value={form.address} onChange={set('address')} required />
+                <FieldDescription>
+                  Your address stays private — buyers see only your store name and city.
+                </FieldDescription>
               </Field>
-              <p className="text-xs text-slate-500">
-                Your address stays private — buyers see only your store name and city.
-              </p>
             </>
           ) : (
             <>
-              <Field label="First name">
-                <Input value={form.firstName} onChange={set('firstName')} required />
+              <Field>
+                <FieldLabel htmlFor="firstName">First name</FieldLabel>
+                <Input id="firstName" value={form.firstName} onChange={set('firstName')} required />
               </Field>
-              <Field label="Last name">
-                <Input value={form.lastName} onChange={set('lastName')} required />
+              <Field>
+                <FieldLabel htmlFor="lastName">Last name</FieldLabel>
+                <Input id="lastName" value={form.lastName} onChange={set('lastName')} required />
               </Field>
             </>
           )}
-          <Alert>{error}</Alert>
-          <Button type="submit" className="w-full" disabled={saving}>
+
+          <ErrorAlert title="Could not save your profile">{error}</ErrorAlert>
+
+          <Button type="submit" size="lg" className="w-full" disabled={saving}>
+            {saving && <Spinner />}
             {saving ? 'Saving…' : 'Continue'}
           </Button>
-        </form>
-      </Card>
-    </div>
+        </FieldGroup>
+      </form>
+    </AuthShell>
   )
 }

@@ -1,13 +1,40 @@
 # Marketplace frontend
 
-React + TypeScript, Tailwind for styling, Redux Toolkit for state. Every call goes to
-the gateway on `:8080` — the platform publishes no other port, so there is one base URL
-and nothing to configure per service.
+React + TypeScript, shadcn/ui on Tailwind v4 for the interface, Redux Toolkit for state.
+Every call goes to the gateway on `:8080` — the platform publishes no other port, so
+there is one base URL and nothing to configure per service.
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
 ```
+
+## The component layer is shadcn/ui
+
+`src/components/ui/` is vendored shadcn source — it is ours to edit, not a dependency to
+upgrade. Add to it with the CLI rather than by hand:
+
+```bash
+npx shadcn@latest add <component>
+```
+
+Everything above it lives in `src/components/`: `app-layout` (the role-aware shell),
+`protected-route`, `auth-shell`, `status-badge`, `error-alert`, `page-header`. Imports go
+through the `@/` alias, which `vite.config.ts` and `tsconfig.app.json` both have to agree
+on.
+
+The theme is the shadcn token set in `src/index.css` with two changes, both for reasons
+the domain forces:
+
+- **`primary` is blue, not the preset's near-black.** The one irreversible action in the
+  platform is an admin approving an offer, and `destructive` has to stay visually
+  distinct from "the main button on this screen" for that to read.
+- **`success` and `warning` are added.** The domain has statuses that are neither —
+  a `PENDING` offer is the healthy state of a new offer, and colouring it with the stock
+  three would make it look like a fault. `status-badge.tsx` holds the whole mapping.
+
+Light and dark both ship; `next-themes` owns the `.dark` class and the toggle is in the
+header.
 
 The dev server runs on 5173 deliberately: it is one of the origins the gateway's CORS
 allowlist names, so the API is reachable from a cold start with no proxy in between.

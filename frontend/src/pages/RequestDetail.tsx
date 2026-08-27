@@ -8,19 +8,50 @@
  */
 
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import {
+  ArrowLeftIcon,
+  EyeOffIcon,
+  HandshakeIcon,
+  LockIcon,
+  LogOutIcon,
+  PackageIcon,
+  TagIcon,
+  UsersIcon,
+} from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import { toast } from 'sonner'
 
-import { isFullOffer } from '../api/types'
-import { useAppDispatch, useAppSelector } from '../store'
-import { createOffer, fetchOffersForRequest } from '../store/offersSlice'
+import { ErrorAlert } from '@/components/error-alert'
+import { StatusBadge } from '@/components/status-badge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
+import { Textarea } from '@/components/ui/textarea'
+import { isFullOffer } from '@/api/types'
+import { useAppDispatch, useAppSelector } from '@/store'
+import { createOffer, fetchOffersForRequest } from '@/store/offersSlice'
 import {
   closeRequest,
   fetchRequest,
   joinRequest,
   leaveRequest,
   updateQuantity,
-} from '../store/requestsSlice'
-import { Alert, Badge, Button, Card, Empty, Field, Input } from '../components/ui'
+} from '@/store/requestsSlice'
 
 export default function RequestDetail() {
   const { id = '' } = useParams()
@@ -30,109 +61,201 @@ export default function RequestDetail() {
   const offers = useAppSelector((s) => s.offers.forRequest)
   const offerError = useAppSelector((s) => s.offers.error)
   const user = useAppSelector((s) => s.auth.user)
-  const [quantity, setQuantity] = useState(1)
 
   useEffect(() => {
     dispatch(fetchRequest(id))
     dispatch(fetchOffersForRequest(id))
   }, [dispatch, id])
 
-  if (!request) return <Empty>Loading…</Empty>
+  if (!request) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    )
+  }
 
   const isOwner = request.createdBy === user?.userId
   const isOpen = request.status === 'OPEN'
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{request.itemName}</h1>
-          <p className="text-slate-600">{request.description}</p>
+    <div className="space-y-6">
+      <Button variant="ghost" size="sm" asChild className="-ml-2.5 text-muted-foreground">
+        <Link to="/requests">
+          <ArrowLeftIcon />
+          Back to open demand
+        </Link>
+      </Button>
+
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+            {request.itemName}
+          </h1>
+          <p className="max-w-2xl text-sm text-muted-foreground">{request.description}</p>
         </div>
-        <Badge>{request.status ?? 'OPEN'}</Badge>
+        <StatusBadge status={request.status ?? 'OPEN'} />
       </div>
 
-      <Card className="flex gap-8">
-        <div>
-          <p className="text-sm text-slate-500">Buyers</p>
-          <p className="text-2xl font-semibold">{request.totalCustomers}</p>
-        </div>
-        <div>
-          <p className="text-sm text-slate-500">Units wanted</p>
-          <p className="text-2xl font-semibold">{request.totalQuantity}</p>
-        </div>
-        <div>
-          <p className="text-sm text-slate-500">Category</p>
-          <p className="text-2xl font-semibold">{request.category}</p>
-        </div>
-      </Card>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat icon={<UsersIcon />} label="Buyers" value={request.totalCustomers} />
+        <Stat icon={<PackageIcon />} label="Units wanted" value={request.totalQuantity} />
+        <Stat icon={<TagIcon />} label="Category" value={request.category} />
+      </div>
 
-      <Alert>{requestError || offerError}</Alert>
+      <ErrorAlert>{requestError || offerError}</ErrorAlert>
 
-      {user?.role === 'CUSTOMER' && isOpen && (
-        <Card className="space-y-3">
-          <h2 className="font-medium">Your participation</h2>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-40">
-              <Field label="Quantity">
-                <Input
-                  type="number"
-                  min={1}
-                  value={quantity}
-                  onChange={(e) => setQuantity(Number(e.target.value))}
-                />
-              </Field>
-            </div>
-            <Button onClick={() => dispatch(joinRequest({ id, quantity }))}>Join</Button>
-            <Button variant="ghost" onClick={() => dispatch(updateQuantity({ id, quantity }))}>
-              Update my quantity
-            </Button>
-            <Button variant="ghost" onClick={() => dispatch(leaveRequest(id))}>
-              Leave
-            </Button>
-            {isOwner && (
-              <Button variant="danger" onClick={() => dispatch(closeRequest(id))}>
-                Close request
-              </Button>
-            )}
-          </div>
-          <p className="text-xs text-slate-500">
-            Joining adds your quantity to the total. Closing notifies every participant.
-          </p>
-        </Card>
-      )}
-
+      {user?.role === 'CUSTOMER' && isOpen && <Participation id={id} isOwner={isOwner} />}
       {user?.role === 'SELLER' && isOpen && <OfferForm requestId={id} />}
 
-      <section className="space-y-2">
-        <h2 className="text-lg font-medium">Offers ({offers.length})</h2>
-        {offers.length === 0 && <Empty>No offers against this request yet.</Empty>}
-        {offers.map((offer) => (
-          <Card key={offer.offerId} className="flex items-center justify-between gap-4">
-            <div>
-              <p className="font-medium">
-                {offer.availableQuantity} units · {offer.pricePerUnit} {offer.currency}
-              </p>
-              <p className="text-sm text-slate-600">
-                {isFullOffer(offer) ? (
-                  offer.description
-                ) : (
-                  <span className="italic text-slate-400">
-                    Competing offer — the seller is not disclosed
-                  </span>
-                )}
-              </p>
-            </div>
-            <Badge>{offer.status ?? 'PENDING'}</Badge>
-          </Card>
-        ))}
+      <section className="space-y-3">
+        <h2 className="font-heading text-lg font-medium">Offers ({offers.length})</h2>
+
+        {offers.length === 0 ? (
+          <Empty className="border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <HandshakeIcon />
+              </EmptyMedia>
+              <EmptyTitle>No offers yet</EmptyTitle>
+              <EmptyDescription>
+                Sellers bid against the combined demand. More buyers makes this request worth
+                bidding on.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="space-y-3">
+            {offers.map((offer) => (
+              <Card key={offer.offerId} size="sm">
+                <CardContent className="flex items-center justify-between gap-4">
+                  <div className="min-w-0 space-y-0.5">
+                    <p className="font-medium tabular-nums">
+                      {offer.availableQuantity} units · {offer.pricePerUnit} {offer.currency}
+                    </p>
+                    {isFullOffer(offer) ? (
+                      <p className="truncate text-sm text-muted-foreground">{offer.description}</p>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-sm text-muted-foreground italic">
+                        <EyeOffIcon className="size-3.5" />
+                        Competing offer — the seller is not disclosed
+                      </p>
+                    )}
+                  </div>
+                  <StatusBadge status={offer.status ?? 'PENDING'} />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   )
 }
 
+function Stat({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: React.ReactNode
+}) {
+  return (
+    <Card size="sm">
+      <CardContent className="space-y-1">
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground [&_svg]:size-3.5">
+          {icon}
+          {label}
+        </p>
+        <p className="font-heading text-2xl font-semibold tabular-nums">{value}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function Participation({ id, isOwner }: { id: string; isOwner: boolean }) {
+  const dispatch = useAppDispatch()
+  const [quantity, setQuantity] = useState(1)
+
+  // Every one of these thunks reports failure by rejecting into the slice's error, which
+  // is already on screen - so the toast is only for the success the page cannot show.
+  const run = async (dispatched: Promise<{ type: string }>, message: string) => {
+    const result = await dispatched
+    if (!result.type.endsWith('/rejected')) toast.success(message)
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Your participation</CardTitle>
+        <CardDescription>
+          Joining adds your quantity to the total. Closing notifies every participant.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap items-end gap-3">
+        <Field className="w-32">
+          <FieldLabel htmlFor="quantity">Quantity</FieldLabel>
+          <Input
+            id="quantity"
+            type="number"
+            min={1}
+            value={quantity}
+            onChange={(e) => setQuantity(Number(e.target.value))}
+          />
+        </Field>
+
+        <Button onClick={() => run(dispatch(joinRequest({ id, quantity })), 'Joined this request')}>
+          Join
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => run(dispatch(updateQuantity({ id, quantity })), 'Quantity updated')}
+        >
+          Update my quantity
+        </Button>
+        <Button variant="ghost" onClick={() => run(dispatch(leaveRequest(id)), 'You left this request')}>
+          <LogOutIcon />
+          Leave
+        </Button>
+
+        {isOwner && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" className="ml-auto">
+                <LockIcon />
+                Close request
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Close this request?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Every participant is notified, and no further offers can be made against it.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep it open</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => run(dispatch(closeRequest(id)), 'Request closed')}
+                >
+                  Close request
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function OfferForm({ requestId }: { requestId: string }) {
   const dispatch = useAppDispatch()
+  const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     availableQuantity: 1,
     pricePerUnit: '0.00',
@@ -148,41 +271,81 @@ function OfferForm({ requestId }: { requestId: string }) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
+    setSaving(true)
     const result = await dispatch(createOffer({ requestId, ...form }))
-    if (createOffer.fulfilled.match(result)) dispatch(fetchOffersForRequest(requestId))
+    setSaving(false)
+    if (createOffer.fulfilled.match(result)) {
+      dispatch(fetchOffersForRequest(requestId))
+      toast.success('Offer submitted', { description: 'An administrator reviews it next.' })
+    }
   }
 
   return (
     <Card>
-      <h2 className="mb-3 font-medium">Make an offer</h2>
-      <form onSubmit={submit} className="grid gap-3 sm:grid-cols-4">
-        <Field label="Units you can supply">
-          <Input
-            type="number"
-            min={1}
-            value={form.availableQuantity}
-            onChange={set('availableQuantity')}
-          />
-        </Field>
-        <Field label="Price per unit">
-          <Input value={form.pricePerUnit} onChange={set('pricePerUnit')} required />
-        </Field>
-        <Field label="Currency">
-          <Input value={form.currency} onChange={set('currency')} maxLength={3} required />
-        </Field>
-        <div className="flex items-end">
-          <Button type="submit">Submit offer</Button>
-        </div>
-        <div className="sm:col-span-4">
-          <Field label="Notes">
-            <Input value={form.description} onChange={set('description')} />
-          </Field>
-        </div>
-        <p className="text-xs text-slate-500 sm:col-span-4">
+      <CardHeader>
+        <CardTitle>Make an offer</CardTitle>
+        <CardDescription>
           An administrator reviews every offer. Contact details are released only if yours is
           approved.
-        </p>
-      </form>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={submit}>
+          <FieldGroup>
+            <div className="grid gap-5 sm:grid-cols-3">
+              <Field>
+                <FieldLabel htmlFor="availableQuantity">Units you can supply</FieldLabel>
+                <Input
+                  id="availableQuantity"
+                  type="number"
+                  min={1}
+                  value={form.availableQuantity}
+                  onChange={set('availableQuantity')}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="pricePerUnit">Price per unit</FieldLabel>
+                <Input
+                  id="pricePerUnit"
+                  value={form.pricePerUnit}
+                  onChange={set('pricePerUnit')}
+                  required
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="currency">Currency</FieldLabel>
+                <Input
+                  id="currency"
+                  value={form.currency}
+                  onChange={set('currency')}
+                  maxLength={3}
+                  required
+                />
+              </Field>
+            </div>
+
+            <Field>
+              <FieldLabel htmlFor="offerDescription">Notes</FieldLabel>
+              <Textarea
+                id="offerDescription"
+                value={form.description}
+                onChange={set('description')}
+                rows={2}
+              />
+              <FieldDescription>
+                What the buyers get for that price — lead time, condition, warranty.
+              </FieldDescription>
+            </Field>
+
+            <div>
+              <Button type="submit" disabled={saving}>
+                {saving && <Spinner />}
+                Submit offer
+              </Button>
+            </div>
+          </FieldGroup>
+        </form>
+      </CardContent>
     </Card>
   )
 }

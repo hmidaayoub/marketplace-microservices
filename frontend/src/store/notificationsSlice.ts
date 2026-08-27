@@ -10,8 +10,8 @@
 
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
-import { api } from '../api/client'
-import type { Notification, UnreadCount } from '../api/types'
+import { api } from '@/api/client'
+import type { Notification, UnreadCount } from '@/api/types'
 import type { RootState } from './index'
 
 interface NotificationsState {

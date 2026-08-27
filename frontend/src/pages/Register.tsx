@@ -1,10 +1,23 @@
 import { useState } from 'react'
+import { ShoppingBasketIcon, StoreIcon, UserPlusIcon } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import type { Role } from '../api/types'
-import { useAppDispatch, useAppSelector } from '../store'
-import { loadSession, register } from '../store/authSlice'
-import { Alert, Button, Card, Field, Input, Select } from '../components/ui'
+import { AuthShell } from '@/components/auth-shell'
+import { ErrorAlert } from '@/components/error-alert'
+import { Button } from '@/components/ui/button'
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Spinner } from '@/components/ui/spinner'
+import type { Role } from '@/api/types'
+import { useAppDispatch, useAppSelector } from '@/store'
+import { loadSession, register } from '@/store/authSlice'
 
 export default function Register() {
   const dispatch = useAppDispatch()
@@ -17,6 +30,7 @@ export default function Register() {
     role: 'CUSTOMER' as Role,
   })
 
+  const busy = status === 'loading'
   const set = (key: keyof typeof form) => (event: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [key]: event.target.value }))
 
@@ -32,61 +46,101 @@ export default function Register() {
   }
 
   return (
-    <div className="mx-auto mt-16 max-w-sm">
-      <h1 className="mb-6 text-center text-2xl font-semibold">Create an account</h1>
-      <Card>
-        <form onSubmit={submit} className="space-y-4">
-          <Field label="I am a">
-            <Select value={form.role} onChange={set('role')}>
-              <option value="CUSTOMER">Customer — I want to buy</option>
-              <option value="SELLER">Seller — I want to supply</option>
+    <AuthShell
+      icon={UserPlusIcon}
+      title="Create an account"
+      description="One account, one role — buying or supplying."
+      footer={
+        <>
+          Already registered?{' '}
+          <Link to="/login" className="font-medium text-primary hover:underline">
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={submit}>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="role">I am a</FieldLabel>
+            <Select
+              value={form.role}
+              onValueChange={(role) => setForm((f) => ({ ...f, role: role as Role }))}
+            >
+              <SelectTrigger id="role" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="CUSTOMER">
+                  <ShoppingBasketIcon />
+                  Customer — I want to buy
+                </SelectItem>
+                <SelectItem value="SELLER">
+                  <StoreIcon />
+                  Seller — I want to supply
+                </SelectItem>
+              </SelectContent>
             </Select>
           </Field>
-          <Field label="Email">
-            <Input type="email" value={form.email} onChange={set('email')} required />
-          </Field>
-          <Field label="Password">
+
+          <Field>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
             <Input
+              id="email"
+              type="email"
+              value={form.email}
+              onChange={set('email')}
+              required
+              autoComplete="email"
+              placeholder="you@example.com"
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="password">Password</FieldLabel>
+            <Input
+              id="password"
               type="password"
               value={form.password}
               onChange={set('password')}
               required
               minLength={8}
+              autoComplete="new-password"
             />
+            <FieldDescription>At least 8 characters.</FieldDescription>
           </Field>
-          <Field label="Phone number">
+
+          <Field>
+            <FieldLabel htmlFor="phoneNumber">Phone number</FieldLabel>
             <Input
+              id="phoneNumber"
               value={form.phoneNumber}
               onChange={set('phoneNumber')}
               placeholder="+216 00 000 000"
+              autoComplete="tel"
               required
             />
+            <FieldDescription>
+              Digits and an optional leading +, and it must not already be registered. Your phone
+              number never leaves the auth service. A seller sees it only after an administrator
+              approves their offer on a request you joined.
+            </FieldDescription>
           </Field>
-          <p className="text-xs text-slate-500">
-            Digits and an optional leading +, and it must not already be registered.
-            Your phone number never leaves the auth service. A seller sees it only after an
-            administrator approves their offer on a request you joined.
-          </p>
-          <Alert>{error}</Alert>
+
+          <ErrorAlert title="Could not create the account">{error}</ErrorAlert>
+
           {error?.includes('already registered') && (
-            <Link
-              to="/login"
-              className="block text-center text-sm font-medium text-brand-600 hover:underline"
-            >
-              Go to sign in →
-            </Link>
+            <Button variant="outline" asChild className="w-full">
+              <Link to="/login">Go to sign in</Link>
+            </Button>
           )}
-          <Button type="submit" className="w-full" disabled={status === 'loading'}>
-            {status === 'loading' ? 'Creating…' : 'Create account'}
+
+          <Button type="submit" size="lg" className="w-full" disabled={busy}>
+            {busy && <Spinner />}
+            {busy ? 'Creating…' : 'Create account'}
           </Button>
-        </form>
-      </Card>
-      <p className="mt-4 text-center text-sm text-slate-600">
-        Already registered?{' '}
-        <Link to="/login" className="font-medium text-brand-600 hover:underline">
-          Sign in
-        </Link>
-      </p>
-    </div>
+        </FieldGroup>
+      </form>
+    </AuthShell>
   )
 }
