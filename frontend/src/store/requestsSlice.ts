@@ -2,8 +2,8 @@
 
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
-import { api, ApiError } from '../api/client'
-import type { CreateRequestBody, PurchaseRequest, RequestStatus } from '../api/types'
+import { api, ApiError } from '@/api/client'
+import type { CreateRequestBody, PurchaseRequest, RequestStatus } from '@/api/types'
 import type { RootState } from './index'
 
 interface RequestsState {

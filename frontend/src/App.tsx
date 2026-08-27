@@ -1,21 +1,21 @@
 import { useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 
-import Layout from './components/Layout'
-import ProtectedRoute from './components/ProtectedRoute'
-import BrowseRequests from './pages/BrowseRequests'
-import Contacts from './pages/Contacts'
-import Login from './pages/Login'
-import MyOffers from './pages/MyOffers'
-import MyRequests from './pages/MyRequests'
-import Notifications from './pages/Notifications'
-import ProfileSetup from './pages/ProfileSetup'
-import Register from './pages/Register'
-import RequestDetail from './pages/RequestDetail'
-import Access from './pages/admin/Access'
-import Queue from './pages/admin/Queue'
-import { useAppDispatch, useAppSelector } from './store'
-import { loadSession } from './store/authSlice'
+import AppLayout from '@/components/app-layout'
+import ProtectedRoute from '@/components/protected-route'
+import BrowseRequests from '@/pages/BrowseRequests'
+import Contacts from '@/pages/Contacts'
+import Login from '@/pages/Login'
+import MyOffers from '@/pages/MyOffers'
+import MyRequests from '@/pages/MyRequests'
+import Notifications from '@/pages/Notifications'
+import ProfileSetup from '@/pages/ProfileSetup'
+import Register from '@/pages/Register'
+import RequestDetail from '@/pages/RequestDetail'
+import Access from '@/pages/admin/Access'
+import Queue from '@/pages/admin/Queue'
+import { useAppDispatch, useAppSelector } from '@/store'
+import { loadSession } from '@/store/authSlice'
 
 export default function App() {
   const dispatch = useAppDispatch()
@@ -45,7 +45,7 @@ export default function App() {
       <Route
         element={
           <ProtectedRoute>
-            <Layout />
+            <AppLayout />
           </ProtectedRoute>
         }
       >

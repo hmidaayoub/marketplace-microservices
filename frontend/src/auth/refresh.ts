@@ -5,10 +5,10 @@
  * slice so the slice stays free of the client's global handler.
  */
 
-import { api } from '../api/client'
-import type { AuthTokens } from '../api/types'
-import { sessionCleared, tokensRefreshed } from '../store/authSlice'
-import type { store as Store } from '../store'
+import { api } from '@/api/client'
+import type { AuthTokens } from '@/api/types'
+import { sessionCleared, tokensRefreshed } from '@/store/authSlice'
+import type { store as Store } from '@/store'
 
 export function installRefresh(store: typeof Store) {
   return async (): Promise<string | null> => {

@@ -1,9 +1,15 @@
 import { useState } from 'react'
+import { LogInIcon } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { useAppDispatch, useAppSelector } from '../store'
-import { loadSession, login } from '../store/authSlice'
-import { Alert, Button, Card, Field, Input } from '../components/ui'
+import { AuthShell } from '@/components/auth-shell'
+import { ErrorAlert } from '@/components/error-alert'
+import { Button } from '@/components/ui/button'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Spinner } from '@/components/ui/spinner'
+import { useAppDispatch, useAppSelector } from '@/store'
+import { loadSession, login } from '@/store/authSlice'
 
 export default function Login() {
   const dispatch = useAppDispatch()
@@ -11,6 +17,8 @@ export default function Login() {
   const { status, error } = useAppSelector((s) => s.auth)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+
+  const busy = status === 'loading'
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -24,21 +32,38 @@ export default function Login() {
   }
 
   return (
-    <div className="mx-auto mt-16 max-w-sm">
-      <h1 className="mb-6 text-center text-2xl font-semibold">Sign in</h1>
-      <Card>
-        <form onSubmit={submit} className="space-y-4">
-          <Field label="Email">
+    <AuthShell
+      icon={LogInIcon}
+      title="Sign in"
+      description="Buyers pool demand, sellers bid against the total."
+      footer={
+        <>
+          No account?{' '}
+          <Link to="/register" className="font-medium text-primary hover:underline">
+            Register
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={submit}>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
             <Input
+              id="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
+              placeholder="you@example.com"
             />
           </Field>
-          <Field label="Password">
+
+          <Field>
+            <FieldLabel htmlFor="password">Password</FieldLabel>
             <Input
+              id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -46,18 +71,15 @@ export default function Login() {
               autoComplete="current-password"
             />
           </Field>
-          <Alert>{error}</Alert>
-          <Button type="submit" className="w-full" disabled={status === 'loading'}>
-            {status === 'loading' ? 'Signing in…' : 'Sign in'}
+
+          <ErrorAlert title="Could not sign in">{error}</ErrorAlert>
+
+          <Button type="submit" size="lg" className="w-full" disabled={busy}>
+            {busy && <Spinner />}
+            {busy ? 'Signing in…' : 'Sign in'}
           </Button>
-        </form>
-      </Card>
-      <p className="mt-4 text-center text-sm text-slate-600">
-        No account?{' '}
-        <Link to="/register" className="font-medium text-brand-600 hover:underline">
-          Register
-        </Link>
-      </p>
-    </div>
+        </FieldGroup>
+      </form>
+    </AuthShell>
   )
 }

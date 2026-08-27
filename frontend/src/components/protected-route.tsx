@@ -10,8 +10,9 @@
 import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 
-import type { Role } from '../api/types'
-import { useAppSelector } from '../store'
+import { Spinner } from '@/components/ui/spinner'
+import type { Role } from '@/api/types'
+import { useAppSelector } from '@/store'
 
 export default function ProtectedRoute({
   children,
@@ -27,7 +28,12 @@ export default function ProtectedRoute({
 
   // The session is restored from storage before /api/users/me has answered.
   if (!user) {
-    return <p className="py-12 text-center text-sm text-slate-500">Loading your session…</p>
+    return (
+      <div className="flex min-h-svh flex-col items-center justify-center gap-3 text-muted-foreground">
+        <Spinner className="size-5" />
+        <p className="text-sm">Loading your session…</p>
+      </div>
+    )
   }
 
   if (hasProfile === false && location.pathname !== '/profile') {
