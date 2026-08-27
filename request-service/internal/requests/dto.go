@@ -43,6 +43,26 @@ type requestResponse struct {
 	TotalQuantity  int64     `json:"totalQuantity"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+
+	// How close this request's item name is to the one that was searched for, 0 to 1.
+	// Carried only by the near-match endpoints, so the caller can order and explain the
+	// suggestions rather than being handed an unranked list.
+	Similarity float32 `json:"similarity,omitempty"`
+
+	// Set when this request carries the searched-for name outright rather than merely
+	// something like it. It is what tells a client that creating is not on offer here -
+	// only joining is - so the form can say so before the customer finds out from a 409.
+	Exact bool `json:"exact,omitempty"`
+}
+
+// requestExistsBody is the 409 a create gets when the item already has an open request.
+// It keeps message and status so it still reads as the platform-wide error shape, and
+// adds the request itself - refusing without saying what to join instead would leave the
+// caller nowhere to go.
+type requestExistsBody struct {
+	Message  string          `json:"message"`
+	Status   int             `json:"status"`
+	Existing requestResponse `json:"existing"`
 }
 
 type demandResponse struct {
@@ -73,6 +93,19 @@ func toResponse(r store.PurchaseRequest) requestResponse {
 	// close a request is part of reading it.
 	if r.CreatedBy.Valid {
 		out.CreatedBy = uuid.UUID(r.CreatedBy.Bytes)
+	}
+	return out
+}
+
+// toScoredResponses carries the similarity across, which is the one thing a near-match
+// has that a plain request does not.
+func toScoredResponses(rs []store.FindSimilarOpenRequestsRow) []requestResponse {
+	out := make([]requestResponse, 0, len(rs))
+	for _, r := range rs {
+		scored := toResponse(r.PurchaseRequest)
+		scored.Similarity = r.Score
+		scored.Exact = r.Exact
+		out = append(out, scored)
 	}
 	return out
 }

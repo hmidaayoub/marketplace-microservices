@@ -37,6 +37,20 @@
                 },
                 "type": "object"
             },
+            "requests.requestExistsBody": {
+                "properties": {
+                    "existing": {
+                        "$ref": "#/components/schemas/requests.requestResponse"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "integer"
+                    }
+                },
+                "type": "object"
+            },
             "requests.requestResponse": {
                 "properties": {
                     "category": {
@@ -51,11 +65,19 @@
                     "description": {
                         "type": "string"
                     },
+                    "exact": {
+                        "description": "Set when this request carries the searched-for name outright rather than merely\nsomething like it. It is what tells a client that creating is not on offer here -\nonly joining is - so the form can say so before the customer finds out from a 409.",
+                        "type": "boolean"
+                    },
                     "itemName": {
                         "type": "string"
                     },
                     "requestId": {
                         "type": "string"
+                    },
+                    "similarity": {
+                        "description": "How close this request's item name is to the one that was searched for, 0 to 1.\nCarried only by the near-match endpoints, so the caller can order and explain the\nsuggestions rather than being handed an unranked list.",
+                        "type": "number"
                     },
                     "status": {
                         "type": "string"
@@ -169,7 +191,7 @@
                 ]
             },
             "post": {
-                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.",
+                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.\nIf an open request already carries this item name, nothing is created:\nthe 409 comes back with that request attached, and joining it is the\ncustomer's own call through the participants endpoint. A merely similar\nname is not refused - see /api/requests/similar, which is what the\nnew-request form shows while the name is being typed.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -230,6 +252,16 @@
                             }
                         },
                         "description": "Not a CUSTOMER, or no customer profile"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/requests.requestExistsBody"
+                                }
+                            }
+                        },
+                        "description": "Already a participant, or this item is already open demand"
                     }
                 },
                 "security": [
@@ -286,6 +318,51 @@
                     }
                 ],
                 "summary": "List the caller's own requests",
+                "tags": [
+                    "requests"
+                ]
+            }
+        },
+        "/api/requests/similar": {
+            "get": {
+                "description": "Powers the suggestions a customer sees while naming an item, and is the\nsame match a create is refused on. Open to everyone, signed in or not:\nit returns the browse projection, ranked by similarity.",
+                "parameters": [
+                    {
+                        "description": "The item name being typed",
+                        "in": "query",
+                        "name": "itemName",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "items": {
+                                        "$ref": "#/components/schemas/requests.requestResponse"
+                                    },
+                                    "type": "array"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "itemName is required"
+                    }
+                },
+                "summary": "Find open requests whose item name is close to this one",
                 "tags": [
                     "requests"
                 ]

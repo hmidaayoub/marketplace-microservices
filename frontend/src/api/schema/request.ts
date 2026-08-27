@@ -13,8 +13,8 @@ export interface paths {
         };
         /**
          * Browse open demand
-         * @description Open to any authenticated role, sellers included: this is how a seller
-         *     finds a request worth offering against.
+         * @description Open to everyone, signed in or not. It carries aggregate totals and no
+         *     participant identity, so there is nothing here a token would protect.
          */
         get: {
             parameters: {
@@ -54,15 +54,6 @@ export interface paths {
                         "application/json": components["schemas"]["httpx.ErrorBody"];
                     };
                 };
-                /** @description Unauthorized */
-                401: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
             };
         };
         put?: never;
@@ -70,6 +61,11 @@ export interface paths {
          * Create a purchase request
          * @description Opens a request other customers can join. The caller becomes its first
          *     participant; the customerId is resolved from the token, never sent.
+         *     If an open request already carries this item name, nothing is created:
+         *     the 409 comes back with that request attached, and joining it is the
+         *     customer's own call through the participants endpoint. A merely similar
+         *     name is not refused - see /api/requests/similar, which is what the
+         *     new-request form shows while the name is being typed.
          */
         post: {
             parameters: {
@@ -119,6 +115,15 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["httpx.ErrorBody"];
+                    };
+                };
+                /** @description Already a participant, or this item is already open demand */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["requests.requestExistsBody"];
                     };
                 };
             };
@@ -183,6 +188,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/requests/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find open requests whose item name is close to this one
+         * @description Powers the suggestions a customer sees while naming an item, and is the
+         *     same match a create is refused on. Open to everyone, signed in or not:
+         *     it returns the browse projection, ranked by similarity.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description The item name being typed */
+                    itemName: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["requests.requestResponse"][];
+                    };
+                };
+                /** @description itemName is required */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["httpx.ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/requests/{requestId}": {
         parameters: {
             query?: never;
@@ -192,8 +250,9 @@ export interface paths {
         };
         /**
          * Read one request with its aggregated demand
-         * @description Returns totals, not the participant list: who joined is withheld from
-         *     the public projection and served only on the internal endpoint.
+         * @description Open to everyone, signed in or not. Returns totals, not the participant
+         *     list: who joined is withheld from the public projection and served only
+         *     on the internal endpoint.
          */
         get: {
             parameters: {
@@ -218,15 +277,6 @@ export interface paths {
                 };
                 /** @description Malformed id */
                 400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-                /** @description Unauthorized */
-                401: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -610,13 +660,30 @@ export interface components {
         "requests.quantityBody": {
             quantity?: number;
         };
+        "requests.requestExistsBody": {
+            existing?: components["schemas"]["requests.requestResponse"];
+            message?: string;
+            status?: number;
+        };
         "requests.requestResponse": {
             category?: string;
             createdAt?: string;
             createdBy?: string;
             description?: string;
+            /**
+             * @description Set when this request carries the searched-for name outright rather than merely
+             *     something like it. It is what tells a client that creating is not on offer here -
+             *     only joining is - so the form can say so before the customer finds out from a 409.
+             */
+            exact?: boolean;
             itemName?: string;
             requestId?: string;
+            /**
+             * @description How close this request's item name is to the one that was searched for, 0 to 1.
+             *     Carried only by the near-match endpoints, so the caller can order and explain the
+             *     suggestions rather than being handed an unranked list.
+             */
+            similarity?: number;
             status?: string;
             totalCustomers?: number;
             totalQuantity?: number;

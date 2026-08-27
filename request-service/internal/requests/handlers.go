@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -41,6 +42,11 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Summary	Create a purchase request
 //	@Description Opens a request other customers can join. The caller becomes its first
 //	@Description participant; the customerId is resolved from the token, never sent.
+//	@Description If an open request already carries this item name, nothing is created:
+//	@Description the 409 comes back with that request attached, and joining it is the
+//	@Description customer's own call through the participants endpoint. A merely similar
+//	@Description name is not refused - see /api/requests/similar, which is what the
+//	@Description new-request form shows while the name is being typed.
 //	@Tags		requests
 //	@Accept		json
 //	@Produce	json
@@ -49,6 +55,7 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Failure	400		{object}	httpx.ErrorBody	"Validation failed"
 //	@Failure	401		{object}	httpx.ErrorBody	"Missing or invalid token"
 //	@Failure	403		{object}	httpx.ErrorBody	"Not a CUSTOMER, or no customer profile"
+//	@Failure	409		{object}	requestExistsBody	"Already a participant, or this item is already open demand"
 //	@Security	bearerAuth
 //	@Router		/api/requests [post]
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -78,12 +85,54 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Quantity:    body.Quantity,
 		ActorUserID: actorUserID,
 	})
+	// Not h.fail: the refusal carries the request it collided with, and the whole point
+	// of refusing is to hand the customer somewhere to go instead.
+	var exists *RequestExistsError
+	if errors.As(err, &exists) {
+		httpx.JSON(w, http.StatusConflict, requestExistsBody{
+			Message: "An open request for this item already exists, so there is nothing to " +
+				"create. Join it to add your quantity to its demand.",
+			Status:   http.StatusConflict,
+			Existing: toResponse(exists.Existing),
+		})
+		return
+	}
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusCreated, toResponse(created))
+}
+
+// Similar handles GET /api/requests/similar.
+//
+//	@Summary	Find open requests whose item name is close to this one
+//	@Description Powers the suggestions a customer sees while naming an item, and is the
+//	@Description same match a create is refused on. Open to everyone, signed in or not:
+//	@Description it returns the browse projection, ranked by similarity.
+//	@Tags		requests
+//	@Produce	json
+//	@Param		itemName	query		string	true	"The item name being typed"
+//	@Success	200			{array}		requestResponse
+//	@Failure	400			{object}	httpx.ErrorBody	"itemName is required"
+//	@Router		/api/requests/similar [get]
+func (h *Handler) Similar(w http.ResponseWriter, r *http.Request) {
+	itemName := strings.TrimSpace(r.URL.Query().Get("itemName"))
+	if itemName == "" {
+		httpx.Error(w, http.StatusBadRequest, "itemName is required")
+		return
+	}
+
+	// The floor is the service's to set, not the caller's: a client that could ask for
+	// everything above 0.01 would be handed noise and show it as a duplicate warning.
+	found, err := h.service.SimilarOpen(r.Context(), itemName, SuggestSimilarity)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toScoredResponses(found))
 }
 
 // List handles GET /api/requests. It needs no token: browsing demand is how a seller

@@ -32,10 +32,15 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { Textarea } from '@/components/ui/textarea'
 import type { PurchaseRequest, RequestStatus } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
-import { createRequest, fetchRequests } from '@/store/requestsSlice'
+import {
+  createRequest,
+  fetchRequests,
+  fetchSimilarRequests,
+  joinRequest,
+  similarCleared,
+} from '@/store/requestsSlice'
 
 /** Any status at all - Radix's Select has no value for "none selected". */
 const ANY = 'ANY'
@@ -208,31 +213,83 @@ function RequestCard({ request }: { request: PurchaseRequest }) {
 
 function NewRequestDialog() {
   const dispatch = useAppDispatch()
+  const similar = useAppSelector((s) => s.requests.similar)
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ itemName: '', description: '', category: '', quantity: 1 })
+  const [formError, setFormError] = useState<string | null>(null)
+  const [form, setForm] = useState({ itemName: '', quantity: 1 })
 
-  const set = (key: keyof typeof form) => (event: { target: { value: string } }) =>
+  // An open request already carrying this exact item is not a suggestion, it is an
+  // answer: there is no second request to make, only demand to join.
+  const exactMatch = similar.find((request) => request.exact)
+
+  const set = (key: keyof typeof form) => (event: { target: { value: string } }) => {
+    // A refusal belonged to the name it was typed against, so editing clears it.
+    setFormError(null)
     setForm((f) => ({
       ...f,
       [key]: key === 'quantity' ? Number(event.target.value) : event.target.value,
     }))
+  }
+
+  // Ask what the name looks like as it is typed, so a customer meets the request they
+  // meant before they have finished describing it themselves. Debounced on the same
+  // 250ms the browse filters use; below three characters everything looks like
+  // everything, so there is nothing worth showing yet.
+  useEffect(() => {
+    const itemName = form.itemName.trim()
+    if (!open || itemName.length < 3) {
+      dispatch(similarCleared())
+      return
+    }
+    const id = setTimeout(() => void dispatch(fetchSimilarRequests(itemName)), 250)
+    return () => clearTimeout(id)
+  }, [dispatch, form.itemName, open])
+
+  function done(title: string, description: string) {
+    dispatch(fetchRequests())
+    dispatch(similarCleared())
+    setOpen(false)
+    setFormError(null)
+    setForm({ itemName: '', quantity: 1 })
+    toast.success(title, { description })
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setSaving(true)
+    setFormError(null)
     const result = await dispatch(createRequest(form))
     setSaving(false)
     if (createRequest.fulfilled.match(result)) {
-      dispatch(fetchRequests())
-      setOpen(false)
-      setForm({ itemName: '', description: '', category: '', quantity: 1 })
-      toast.success('Request created', { description: 'Other buyers can now join it.' })
+      done('Request created', 'Other buyers can now join it.')
+      return
+    }
+    // A refusal arrives with the requests it matched, which the panel above is already
+    // rendering by now - so this only has to say why the button did not work.
+    setFormError(result.payload?.message ?? 'Could not create request')
+  }
+
+  async function join(request: PurchaseRequest) {
+    setSaving(true)
+    const result = await dispatch(joinRequest({ id: request.requestId, quantity: form.quantity }))
+    setSaving(false)
+    if (joinRequest.fulfilled.match(result)) {
+      done(
+        'You joined an existing request',
+        `Your ${form.quantity} joined the demand for ${request.itemName}.`,
+      )
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) dispatch(similarCleared())
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="lg">
           <PlusIcon />
@@ -243,40 +300,65 @@ function NewRequestDialog() {
         <DialogHeader>
           <DialogTitle>New request</DialogTitle>
           <DialogDescription>
-            Other buyers can join yours. Sellers offer against the combined demand, not your
-            quantity alone.
+            Name the item and say how many you want. If someone has already asked for it, you
+            join them - sellers offer against the combined demand, not your quantity alone.
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={submit}>
           <FieldGroup>
-            <div className="grid gap-5 sm:grid-cols-2">
-              <Field>
-                <FieldLabel htmlFor="itemName">Item</FieldLabel>
-                <Input id="itemName" value={form.itemName} onChange={set('itemName')} required />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="category">Category</FieldLabel>
-                <Input
-                  id="category"
-                  value={form.category}
-                  onChange={set('category')}
-                  placeholder="kitchen"
-                  required
-                />
-              </Field>
-            </div>
-
             <Field>
-              <FieldLabel htmlFor="description">Description</FieldLabel>
-              <Textarea
-                id="description"
-                value={form.description}
-                onChange={set('description')}
-                rows={3}
+              <FieldLabel htmlFor="itemName">Item</FieldLabel>
+              <Input
+                id="itemName"
+                value={form.itemName}
+                onChange={set('itemName')}
+                placeholder="Espresso Machine"
                 required
               />
+              <FieldDescription>
+                The name is what pools the demand: an item already being asked for lands you in
+                that request.
+              </FieldDescription>
             </Field>
+
+            {/* Demand that already exists for what is being typed. Never joined on the
+                customer's behalf - being enrolled in a stranger's request because a name
+                collided is not what anybody asked for - so it is put in front of them
+                with a button, and the decision stays theirs. */}
+            {similar.length > 0 && (
+              <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <SearchIcon className="size-4" />
+                  {exactMatch
+                    ? 'A request for this item already exists'
+                    : `${similar.length === 1 ? 'One open request looks' : `${similar.length} open requests look`} like this`}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {exactMatch
+                    ? 'You cannot open a second request for the same item. Join this one and your quantity is added to its demand.'
+                    : 'If one of these is what you meant, join it - your demand pools with theirs and sellers bid against the combined total. Otherwise carry on and open your own.'}
+                </p>
+                <ul className="space-y-1.5">
+                  {similar.map((request) => (
+                    <li
+                      key={request.requestId}
+                      className="flex items-center gap-3 rounded-md bg-background p-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{request.itemName}</p>
+                        <p className="text-xs text-muted-foreground tabular-nums">
+                          {request.totalCustomers} buyers · {request.totalQuantity} units
+                        </p>
+                      </div>
+                      <Button type="button" size="sm" disabled={saving} onClick={() => join(request)}>
+                        Join with {form.quantity}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <Field>
               <FieldLabel htmlFor="quantity">How many you want</FieldLabel>
@@ -295,14 +377,24 @@ function NewRequestDialog() {
               </FieldDescription>
             </Field>
 
+            <ErrorAlert title="Could not create this request">{formError}</ErrorAlert>
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving}>
-                {saving && <Spinner />}
-                Create request
-              </Button>
+              {/* Withheld entirely when the item is already open demand: there is no
+                  create to make, and a button that can only fail is worse than none. */}
+              {!exactMatch && (
+                <Button
+                  type="submit"
+                  disabled={saving}
+                  variant={similar.length > 0 ? 'outline' : 'default'}
+                >
+                  {saving && <Spinner />}
+                  {similar.length > 0 ? 'Create a separate request' : 'Create request'}
+                </Button>
+              )}
             </DialogFooter>
           </FieldGroup>
         </form>

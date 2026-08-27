@@ -10,6 +10,8 @@ interface RequestsState {
   browse: PurchaseRequest[]
   mine: PurchaseRequest[]
   current: PurchaseRequest | null
+  /** Open requests whose item name is close to what is being typed into the new-request form. */
+  similar: PurchaseRequest[]
   loading: boolean
   error: string | null
 }
@@ -18,8 +20,21 @@ const initialState: RequestsState = {
   browse: [],
   mine: [],
   current: null,
+  similar: [],
   loading: false,
   error: null,
+}
+
+/** What a refused create carries back: why, and the open request to join instead. */
+interface CreateRejection {
+  message: string
+  existing: PurchaseRequest | null
+}
+
+function existingIn(error: unknown): PurchaseRequest | null {
+  if (!(error instanceof ApiError) || typeof error.body !== 'object' || error.body === null) return null
+  const { existing } = error.body as { existing?: PurchaseRequest }
+  return existing ?? null
 }
 
 const tokenOf = (state: unknown) => (state as RootState).auth.accessToken
@@ -49,10 +64,28 @@ export const fetchRequest = createAsyncThunk<PurchaseRequest, string, { state: R
   async (id, { getState }) => api(`/api/requests/${id}`, { token: tokenOf(getState()) }),
 )
 
+/**
+ * Suggestions for the name being typed. Failures are swallowed rather than rejected:
+ * this runs on every keystroke and a hint that could not be fetched is not something to
+ * put an error banner on the page for.
+ */
+export const fetchSimilarRequests = createAsyncThunk<PurchaseRequest[], string>(
+  'requests/fetchSimilar',
+  async (itemName) => {
+    try {
+      return await api<PurchaseRequest[]>(
+        `/api/requests/similar?itemName=${encodeURIComponent(itemName)}`,
+      )
+    } catch {
+      return []
+    }
+  },
+)
+
 export const createRequest = createAsyncThunk<
   PurchaseRequest,
   CreateRequestBody,
-  { state: RootState; rejectValue: string }
+  { state: RootState; rejectValue: CreateRejection }
 >('requests/create', async (body, { getState, rejectWithValue }) => {
   try {
     return await api<PurchaseRequest>('/api/requests', {
@@ -61,7 +94,13 @@ export const createRequest = createAsyncThunk<
       token: tokenOf(getState()),
     })
   } catch (error) {
-    return rejectWithValue(error instanceof ApiError ? error.message : 'Could not create request')
+    return rejectWithValue({
+      message: error instanceof ApiError ? error.message : 'Could not create request',
+      // A create refused because the item is already open demand names that request.
+      // Keeping it means the form can offer it even when the customer submitted before
+      // the suggestions arrived - the server is what enforces this, not the debounce.
+      existing: existingIn(error),
+    })
   }
 })
 
@@ -135,6 +174,9 @@ const requestsSlice = createSlice({
     errorCleared(state) {
       state.error = null
     },
+    similarCleared(state) {
+      state.similar = []
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -151,9 +193,20 @@ const requestsSlice = createSlice({
       .addCase(fetchRequest.fulfilled, (state, action) => {
         state.current = action.payload
       })
+      .addCase(fetchSimilarRequests.fulfilled, (state, action) => {
+        state.similar = action.payload
+      })
       .addCase(createRequest.fulfilled, (state, action) => {
         state.mine.unshift(action.payload)
+        state.similar = []
         state.error = null
+      })
+      // Refused because the item already has an open request: show it, which is what the
+      // customer needs in order to join instead. Marked exact, because that is what it
+      // is and it is what the form reads to know creating is not on offer.
+      .addCase(createRequest.rejected, (state, action) => {
+        const existing = action.payload?.existing
+        if (existing) state.similar = [{ ...existing, exact: true }]
       })
       .addCase(leaveRequest.fulfilled, (state, action) => {
         state.mine = state.mine.filter((r) => r.requestId !== action.payload)
@@ -176,15 +229,16 @@ const requestsSlice = createSlice({
         },
       )
       .addMatcher(
-        (action): action is { type: string; payload?: string } =>
+        (action): action is { type: string; payload?: string | CreateRejection } =>
           action.type.startsWith('requests/') && action.type.endsWith('/rejected'),
         (state, action) => {
           state.loading = false
-          state.error = action.payload ?? 'Something went wrong'
+          const payload = action.payload
+          state.error = (typeof payload === 'string' ? payload : payload?.message) ?? 'Something went wrong'
         },
       )
   },
 })
 
-export const { errorCleared } = requestsSlice.actions
+export const { errorCleared, similarCleared } = requestsSlice.actions
 export default requestsSlice.reducer

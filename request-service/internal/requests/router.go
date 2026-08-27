@@ -52,6 +52,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// /me is registered below as a static segment, so it is matched ahead of
 		// {requestId} and never reaches this handler.
 		r.Get("/", cfg.Handler.List)
+		// Static, so chi matches it ahead of {requestId} - the same arrangement /me
+		// relies on one group down.
+		r.Get("/similar", cfg.Handler.Similar)
 		r.Get("/{requestId}", cfg.Handler.Get)
 
 		r.Group(func(r chi.Router) {

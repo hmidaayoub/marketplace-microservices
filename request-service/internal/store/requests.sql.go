@@ -91,6 +91,138 @@ func (q *Queries) DeleteParticipant(ctx context.Context, arg DeleteParticipantPa
 	return result.RowsAffected(), nil
 }
 
+const findOpenRequestByItemName = `-- name: FindOpenRequestByItemName :one
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
+WHERE request_item_key(item_name) = request_item_key($1::text)
+  AND status = 'OPEN'
+ORDER BY created_at, request_id
+LIMIT 1
+`
+
+// R1 with a twist: a second customer asking for the same item is not new demand, it is
+// more of the demand that already exists - so there is nothing to create, and this is
+// what says so. Names are compared on request_item_key, so "Espresso Machine",
+// "espresso machine " and "Espresso-Machine" are one request; the oldest open one wins.
+// Only OPEN requests match - a closed one cannot be joined, so naming it opens a fresh
+// request.
+//
+// No FOR UPDATE: creating never writes to the request it finds. Joining is a separate
+// call the customer makes for themselves, and that path takes the lock it needs.
+func (q *Queries) FindOpenRequestByItemName(ctx context.Context, itemName string) (PurchaseRequest, error) {
+	row := q.db.QueryRow(ctx, findOpenRequestByItemName, itemName)
+	var i PurchaseRequest
+	err := row.Scan(
+		&i.RequestID,
+		&i.ItemName,
+		&i.Description,
+		&i.Category,
+		&i.Status,
+		&i.TotalCustomers,
+		&i.TotalQuantity,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.CreatedBy,
+	)
+	return i, err
+}
+
+const findSimilarOpenRequests = `-- name: FindSimilarOpenRequests :many
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by,
+       similarity(request_item_key(pr.item_name), request_item_key($1::text)) AS score,
+       -- The same name, not merely a close one. Carried so a caller can tell the two
+       -- refusals apart: a near-match may be overridden, an exact one may not.
+       (request_item_key(pr.item_name) = request_item_key($1::text)) AS exact,
+       -- coalesced because array_length is NULL for an empty array, and a key that
+       -- normalized to nothing must read as "does not contain", not as unknown.
+       COALESCE(
+           (array_length(request_item_words(pr.item_name), 1) >= 2
+            AND request_item_words($1::text) @> request_item_words(pr.item_name))
+        OR (array_length(request_item_words($1::text), 1) >= 2
+            AND request_item_words(pr.item_name) @> request_item_words($1::text)),
+           false
+       )::boolean AS contains
+FROM purchase_request pr
+WHERE pr.status = 'OPEN'
+  AND (
+        (request_item_key(pr.item_name) % request_item_key($1::text)
+         AND similarity(request_item_key(pr.item_name), request_item_key($1::text)) >= $2::real)
+     OR (array_length(request_item_words(pr.item_name), 1) >= 2
+         AND request_item_words($1::text) @> request_item_words(pr.item_name))
+     OR (array_length(request_item_words($1::text), 1) >= 2
+         AND request_item_words(pr.item_name) @> request_item_words($1::text))
+      )
+ORDER BY exact DESC, contains DESC, score DESC, pr.created_at
+LIMIT $3
+`
+
+type FindSimilarOpenRequestsParams struct {
+	ItemName    string
+	MinScore    float32
+	ResultLimit int32
+}
+
+type FindSimilarOpenRequestsRow struct {
+	PurchaseRequest PurchaseRequest
+	Score           float32
+	Exact           bool
+	Contains        bool
+}
+
+// The names an exact match cannot see, by either of the two signals that catch them.
+//
+// score is trigram distance on the normalized key, which is what finds a typo. contains
+// is whole-word containment, which is what finds the same product with more said about
+// it - and it is a separate signal rather than a lower threshold because scoring cannot
+// express it: "Espresso Machine" reaches only .515 against "Espresso Machine Pro Deluxe
+// 2024", below the .538 that "Laptop" reaches against the genuinely different "Laptop
+// Stand". No single number separates those two; containment does.
+//
+// Containment demands two words on the shorter side, which is the whole difference
+// between the case worth catching and the case worth leaving alone. Both are one name
+// inside another: "espresso machine" in "espresso machine pro deluxe 2024", "laptop" in
+// "laptop stand". The first is a product described at more length; the second is a
+// different product that happens to be named after the first. A single word is a
+// category far more often than it is an item, so one word never triggers this.
+//
+// The % operator and @> do the narrowing, because those are the forms the GIN indexes
+// serve; min_score then applies the caller's own floor on top of the 0.3 the schema
+// pins % to. A min_score below 0.3 filters nothing extra - the operator has already
+// dropped those rows - and rows found only by containment are returned whatever they
+// score, which is the point of having a second signal at all.
+func (q *Queries) FindSimilarOpenRequests(ctx context.Context, arg FindSimilarOpenRequestsParams) ([]FindSimilarOpenRequestsRow, error) {
+	rows, err := q.db.Query(ctx, findSimilarOpenRequests, arg.ItemName, arg.MinScore, arg.ResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindSimilarOpenRequestsRow{}
+	for rows.Next() {
+		var i FindSimilarOpenRequestsRow
+		if err := rows.Scan(
+			&i.PurchaseRequest.RequestID,
+			&i.PurchaseRequest.ItemName,
+			&i.PurchaseRequest.Description,
+			&i.PurchaseRequest.Category,
+			&i.PurchaseRequest.Status,
+			&i.PurchaseRequest.TotalCustomers,
+			&i.PurchaseRequest.TotalQuantity,
+			&i.PurchaseRequest.CreatedAt,
+			&i.PurchaseRequest.UpdatedAt,
+			&i.PurchaseRequest.CreatedBy,
+			&i.Score,
+			&i.Exact,
+			&i.Contains,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getParticipant = `-- name: GetParticipant :one
 SELECT participant_id, request_id, customer_id, quantity, joined_at FROM request_participant
 WHERE request_id = $1 AND customer_id = $2
@@ -256,6 +388,19 @@ func (q *Queries) ListRequestsByCustomer(ctx context.Context, customerID uuid.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockItemName = `-- name: LockItemName :exec
+SELECT pg_advisory_xact_lock(hashtext(request_item_key($1::text)))
+`
+
+// Held for the length of the transaction, keyed on the normalized name. Two customers
+// naming the same brand-new item at the same instant would otherwise both find nothing
+// above and both create a request; with this the second one waits, then finds the first
+// one's. It locks a name, not a row, so there is nothing to lock before the row exists.
+func (q *Queries) LockItemName(ctx context.Context, itemName string) error {
+	_, err := q.db.Exec(ctx, lockItemName, itemName)
+	return err
 }
 
 const lockRequest = `-- name: LockRequest :one
