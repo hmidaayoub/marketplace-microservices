@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { LogInIcon, PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
@@ -212,6 +212,7 @@ function RequestCard({ request }: { request: PurchaseRequest }) {
 }
 
 function NewRequestDialog() {
+  const navigate = useNavigate()
   const dispatch = useAppDispatch()
   const similar = useAppSelector((s) => s.requests.similar)
   const [open, setOpen] = useState(false)
@@ -272,13 +273,24 @@ function NewRequestDialog() {
 
   async function join(request: PurchaseRequest) {
     setSaving(true)
-    const result = await dispatch(joinRequest({ id: request.requestId, quantity: form.quantity }))
+    const result = await dispatch(
+      // Generated from the OpenAPI document, where the id is not marked required, the
+      // same way notificationId, accessId and offerId are asserted at their call sites.
+      joinRequest({ id: request.requestId!, quantity: form.quantity }),
+    )
     setSaving(false)
     if (joinRequest.fulfilled.match(result)) {
-      done(
-        'You joined an existing request',
-        `Your ${form.quantity} joined the demand for ${request.itemName}.`,
-      )
+      // Joining ends on My requests: the quantity just added is the caller's own, and
+      // this list shows everyone's. done() is deliberately not used - its refetch of the
+      // browse list would be thrown away by the navigation on the next line.
+      dispatch(similarCleared())
+      setOpen(false)
+      setFormError(null)
+      setForm({ itemName: '', quantity: 1 })
+      toast.success('You joined an existing request', {
+        description: `Your ${form.quantity} joined the demand for ${request.itemName}.`,
+      })
+      navigate('/my-requests')
     }
   }
 
