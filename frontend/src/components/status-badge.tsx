@@ -2,8 +2,8 @@
  * One badge for every status the platform has, in one table.
  *
  * The domain's statuses are not success/failure - a PENDING offer is the normal state
- * of a healthy offer, and a CLOSED request is not a fault - so they are coloured
- * against the semantic tokens rather than forced into shadcn's three badge variants.
+ * of a healthy offer, and a request with no buyers on it is not a fault - so they are
+ * coloured against the semantic tokens rather than forced into shadcn's three variants.
  */
 
 import {
@@ -12,8 +12,7 @@ import {
   CircleDotIcon,
   CircleXIcon,
   ClockIcon,
-  HandshakeIcon,
-  LockIcon,
+  UsersRoundIcon,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -29,12 +28,13 @@ interface StatusStyle {
 const STATUSES: Record<string, StatusStyle> = {
   // Requests
   OPEN: { label: 'Open', className: 'bg-success/12 text-success', icon: CircleDotIcon },
-  OFFER_APPROVED: {
-    label: 'Offer approved',
-    className: 'bg-primary/12 text-primary',
-    icon: HandshakeIcon,
+  // Not a terminal state and not a fault: nobody is on this request at the moment, and
+  // one join makes it Open again. Muted rather than red for exactly that reason.
+  INACTIVE: {
+    label: 'No buyers',
+    className: 'bg-muted text-muted-foreground',
+    icon: UsersRoundIcon,
   },
-  CLOSED: { label: 'Closed', className: 'bg-muted text-muted-foreground', icon: LockIcon },
   // Offers
   PENDING: { label: 'Pending review', className: 'bg-warning/15 text-warning', icon: ClockIcon },
   APPROVED: { label: 'Approved', className: 'bg-success/12 text-success', icon: CircleCheckIcon },

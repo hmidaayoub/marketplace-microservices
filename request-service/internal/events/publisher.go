@@ -30,7 +30,6 @@ const (
 // payload, because one event can produce notifications of more than one type.
 const (
 	KeyRequestJoined        = "request.joined"
-	KeyRequestClosed        = "request.closed"
 	KeyOfferCreated         = "offer.created"
 	KeyOfferApproved        = "offer.approved"
 	KeyOfferRejected        = "offer.rejected"

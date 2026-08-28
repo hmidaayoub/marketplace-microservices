@@ -158,16 +158,36 @@ printf '    %scustomer 2: %s notification(s): %s%s\n' "$dim" "$(count)" "$(types
 api GET /api/notifications/me/unread-count "" "$S1"
 expect 200 "unread count"
 
-step "Closing a request fans out to every participant"
-api POST /api/requests "{\"itemName\":\"Cafetiere $RUN\",\"description\":\"to be closed\",\"category\":\"kitchen\",\"quantity\":1}" "$C1"
+step "A request empties and fills again rather than ending"
+api POST /api/requests "{\"itemName\":\"Cafetiere $RUN\",\"description\":\"emptied and revived\",\"category\":\"kitchen\",\"quantity\":1}" "$C1"
 expect 201 "create a second request"
-CLOSE="$(field requestId)"
-api POST "/api/requests/$CLOSE/participants" '{"quantity":2}' "$C2"
+LIFE="$(field requestId)"
+api POST "/api/requests/$LIFE/participants" '{"quantity":2}' "$C2"
 expect 201 "customer 2 joins it"
-api POST "/api/requests/$CLOSE/close" "" "$C1"
-expect 200 "owner closes it"
-api POST "/api/requests/$CLOSE/close" "" "$C1"
-expect 409 "closing twice is refused"
+
+# The owner is a participant like anyone else, so their leaving is not the end of it.
+api DELETE "/api/requests/$LIFE/participants/me" "" "$C1"
+expect 204 "the owner leaves"
+api GET "/api/requests/$LIFE" "" "$C1"
+expect 200 "read it back"
+[ "$(field status)" = "OPEN" ] && ok "still OPEN — customer 2 is on it" \
+  || bad "status is $(field status), want OPEN while a buyer remains"
+
+api DELETE "/api/requests/$LIFE/participants/me" "" "$C2"
+expect 204 "the last buyer leaves"
+api GET "/api/requests/$LIFE" "" "$C1"
+[ "$(field status)" = "INACTIVE" ] && ok "INACTIVE with nobody on it" \
+  || bad "status is $(field status), want INACTIVE"
+
+# And it is not terminal: one join brings it back.
+api POST "/api/requests/$LIFE/participants" '{"quantity":4}' "$C2"
+expect 201 "someone joins the empty request"
+[ "$(field status)" = "OPEN" ] && ok "OPEN again — INACTIVE is not an ending" \
+  || bad "status is $(field status), want OPEN again"
+
+# Nothing outside the participants can end it.
+api POST "/api/requests/$LIFE/close" "" "$C1"
+expect 404 "there is no close endpoint"
 
 step "The gateway boundary (spec section 6)"
 api GET "/internal/requests/$REQ"

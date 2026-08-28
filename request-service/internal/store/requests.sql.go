@@ -433,6 +433,7 @@ const recalculateDemand = `-- name: RecalculateDemand :one
 UPDATE purchase_request pr
 SET total_customers = d.total_customers,
     total_quantity  = d.total_quantity,
+    status          = CASE WHEN d.total_customers = 0 THEN 'INACTIVE' ELSE 'OPEN' END,
     updated_at      = now()
 FROM (
     SELECT COUNT(*)::int                       AS total_customers,
@@ -446,40 +447,13 @@ RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, p
 
 // R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
 // from request_participant in the same transaction as the mutation that changed it.
+//
+// The status is recomputed with them, because it is the same fact: a request nobody is
+// on is INACTIVE, and the join that puts someone back on it makes it OPEN again. That
+// makes the status derived rather than commanded - there is no call that sets it, so
+// it can never disagree with the participants it describes.
 func (q *Queries) RecalculateDemand(ctx context.Context, requestID uuid.UUID) (PurchaseRequest, error) {
 	row := q.db.QueryRow(ctx, recalculateDemand, requestID)
-	var i PurchaseRequest
-	err := row.Scan(
-		&i.RequestID,
-		&i.ItemName,
-		&i.Description,
-		&i.Category,
-		&i.Status,
-		&i.TotalCustomers,
-		&i.TotalQuantity,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.CreatedBy,
-	)
-	return i, err
-}
-
-const setRequestStatus = `-- name: SetRequestStatus :one
-UPDATE purchase_request
-SET status = $1, updated_at = now()
-WHERE request_id = $2
-RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by
-`
-
-type SetRequestStatusParams struct {
-	Status    string
-	RequestID uuid.UUID
-}
-
-// Sets a terminal or in-flight status. Used by the owner closing their own request and,
-// through the internal API, by Admin/Contact once an offer has been approved.
-func (q *Queries) SetRequestStatus(ctx context.Context, arg SetRequestStatusParams) (PurchaseRequest, error) {
-	row := q.db.QueryRow(ctx, setRequestStatus, arg.Status, arg.RequestID)
 	var i PurchaseRequest
 	err := row.Scan(
 		&i.RequestID,

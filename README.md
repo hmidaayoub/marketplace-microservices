@@ -197,11 +197,9 @@ who want it. Endpoints follow spec section 10.
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
 | `PUT` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
 | `DELETE` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
-| `POST` | `/api/requests/{requestId}/close` | CUSTOMER, the creator |
 | `GET` | `/internal/requests/{requestId}` | internal key |
 | `GET` | `/internal/requests/{requestId}/demand` | internal key |
 | `GET` | `/internal/requests/{requestId}/participants` | internal key |
-| `PATCH` | `/internal/requests/{requestId}/status` | internal key |
 
 Browsing needs no token at all. It is how a seller finds demand worth an offer, and how
 somebody without an account sees what the platform is before signing up for one. Nothing
@@ -220,7 +218,7 @@ Rules worth knowing:
   is bidding against, so there is nothing for the second one to create. Asking again for
   something you already asked for is the same `409` with no `existing`, because offering
   somebody a request they are already in is no use to them. Only `OPEN` requests match —
-  a closed one cannot be joined, so naming it opens a fresh request. The name is locked
+  one nobody is on has no demand to join, so naming it opens a fresh request. The name is locked
   for the length of the transaction (`pg_advisory_xact_lock`), so two customers naming
   the same new item at once cannot both find nothing and both create. Because the name
   carries this weight, it is all the create form asks for besides a quantity; the
@@ -271,25 +269,29 @@ Rules worth knowing:
   too low.
 - **A customer joins a request at most once.** Enforced by a unique constraint rather
   than a read-then-write check, which two concurrent joins would both pass.
-- **Participants may only change while the request is `OPEN`.** Once an offer is in
-  flight, the demand it was priced against stops moving.
+- **Participation is never gated on status.** A request is `OPEN` while at least one
+  customer wants the item and `INACTIVE` once the last one leaves, and joining an
+  `INACTIVE` request makes it `OPEN` again. Neither state is terminal, so there is no
+  point at which a customer is locked out of demand they want to be part of.
 - **Identity is never accepted from the caller.** The token's `sub` is resolved to a
   `customerId` through customer-service's internal API; a body carrying `customerId` is
   rejected, not ignored.
 - **No phone numbers, ever** (R10). `customerId`s leave only through
   `/internal/requests/{id}/participants`, which is what Admin/Contact uses to grant
   ContactAccess — so a seller browsing demand cannot enumerate the customers behind it.
-- **A request has an owner, and only the owner closes it.** `created_by` is set when the
-  request is created, because closing withdraws demand that other people joined — that
-  is not a decision any participant should be able to make for the rest. A participant
-  attempting it gets 403 rather than 404: they can already read the request, they simply
-  did not create it. Closing emits `REQUEST_CLOSED` to every participant, one event
-  carrying them all, written in the same transaction as the status change.
-- **The status lifecycle is now actually driven.** `PATCH /internal/requests/{id}/status`
-  is how Admin/Contact marks a request as having an approved offer. Offer-service has
-  always refused new offers against an `OFFER_APPROVED` request; until something made
-  that transition, the guard could never fire. The internal API accepts only forward
-  transitions — Admin/Contact decides offers, not demand, so it cannot reopen a request.
+- **A request records its owner but grants them no power over it.** `created_by` is
+  still set when the request is created, because it is worth knowing who opened the
+  demand. It is not a permission: the creator is a participant like every other, and
+  the only thing any of them may do is join, change their own quantity, or leave.
+- **The status is derived, not commanded.** `RecalculateDemand` writes it in the same
+  statement and the same transaction as `total_customers` and `total_quantity`, from
+  the participant rows those totals are counted from — so it cannot disagree with them.
+  Nothing sets a status: there is no close endpoint and no internal status API, and
+  `OFFER_APPROVED`, `CLOSED`, `OFFER_PENDING` and `CANCELLED` no longer exist.
+- **A request never ends.** Demand does not stop being demand because one deal was
+  struck against it, and it is not the platform's to withdraw on a customer's behalf.
+  An emptied request is `INACTIVE`, which describes who is on it rather than what may
+  still happen to it, and a single join revives it.
 
 ## Offer Service
 
@@ -309,10 +311,12 @@ Owns seller proposals against aggregated demand (spec section 11).
 
 Rules worth knowing:
 
-- **An offer may only target a request that exists** (R5). Submission calls
-  request-service's internal API first; an unknown request is a 404, and a request that
-  is `OFFER_APPROVED`, `CLOSED` or `CANCELLED` is a 409. `OFFER_PENDING` still accepts
-  offers — several sellers compete on the same demand until an admin picks one.
+- **An offer may only target a request that exists** (R5), and that is the whole of it.
+  Submission calls request-service's internal API first and an unknown request is a 404.
+  No status refuses an offer: neither `OPEN` nor `INACTIVE` ends a request, and one join
+  revives an empty one, so a refusal here would only turn away a seller who was early.
+  Several sellers compete on the same demand, and an approval does not close the door on
+  the ones who come after.
 - **A new offer is always `PENDING`** (R6). `status` is not a field on the create schema
   at all, so a caller cannot start one anywhere else.
 - **Only a `PENDING` offer can be changed or decided.** Once approved, contact
@@ -415,7 +419,6 @@ The full contract - topology, envelope, delivery guarantees - is in `docs/events
 | `OFFER_APPROVED` | `offer.approved` | Admin/Contact | the seller |
 | `OFFER_REJECTED` | `offer.rejected` | Admin/Contact | the seller |
 | `CONTACT_ACCESS_GRANTED` | `contact.access.granted` | Admin/Contact | the seller |
-| `REQUEST_CLOSED` | `request.closed` | Request | every participant |
 
 Rules worth knowing:
 
@@ -436,9 +439,11 @@ Rules worth knowing:
   unchanged. A notification that was never delivered cannot be read at all.
 - **The unread count excludes `FAILED`.** A notification that never reached the user is
   an operational problem, not an unread message.
-- **A fan-out is all or nothing.** `REQUEST_CLOSED` reaching some participants and not
-  others, with no record of which, is worse than reaching none: the producer could not
-  safely retry it. One transaction means a failed call is simply repeated.
+- **A fan-out is all or nothing.** A notification reaching some of its recipients and
+  not others, with no record of which, is worse than reaching none: the producer could
+  not safely retry it. One transaction means a failed call is simply repeated. The
+  guarantee outlived the event that motivated it — `REQUEST_CLOSED` went when closing
+  did — and `/internal/notifications` still takes a list rather than one recipient.
 - **The event set is open by design.** Section 13 introduces the list with "Examples",
   so the column is shape-checked (`^[A-Z][A-Z0-9_]*$`) rather than constrained to an
   enum — adding an event to the platform never means migrating this table.
@@ -484,9 +489,8 @@ there is no window in which a request is joined but the notification has vanishe
   capped at 700ms and a publish at 2s.
 
 What is still *not* transactional: Admin/Contact's `Decide` relays the offer status to
-offer-service over HTTP, and moves the request to `OFFER_APPROVED` in a second call
-after the commit. Those are commands to other services rather than notifications, so
-the outbox does not cover them. A command outbox would, at the cost of making approval
+offer-service over HTTP. That is a command to another service rather than a
+notification, so the outbox does not cover it. A command outbox would, at the cost of making approval
 asynchronous — an admin would stop learning from the response whether offer-service had
 accepted the decision, which is a worse trade than the window it closes.
 

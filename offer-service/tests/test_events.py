@@ -82,13 +82,8 @@ async def test_a_rejected_offer_writes_no_event(client, upstream):
     offer that was never stored cannot leave an announcement behind."""
     token, _request_id, _ = await a_seller(client, upstream, admins=1)
 
-    # R5: the request does not exist.
+    # R5, and now the only thing that refuses a submission: the request does not exist.
     assert (await submit(client, token, uuid.uuid4())).status_code == 404
-
-    # And a request that is no longer accepting offers.
-    closed = uuid.uuid4()
-    upstream.add_request(closed, status="CLOSED")
-    assert (await submit(client, token, closed)).status_code == 409
 
     assert await outbox_rows() == []
 

@@ -38,7 +38,7 @@ export type ContactAccess = AdminSchema['schemas']['admin.contactAccessResponse'
 export type Notification = NotificationSchema['schemas']['NotificationOut']
 export type UnreadCount = NotificationSchema['schemas']['UnreadCountOut']
 
-export type RequestStatus = 'OPEN' | 'OFFER_APPROVED' | 'CLOSED'
+export type RequestStatus = 'OPEN' | 'INACTIVE'
 
 /**
  * The rival-seller projection withholds sellerId, so its presence is what distinguishes

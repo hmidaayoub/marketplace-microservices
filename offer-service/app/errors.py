@@ -17,7 +17,6 @@ from app.service import (
     NotOfferOwner,
     OfferNotFound,
     OfferNotPending,
-    RequestNotAcceptingOffers,
 )
 
 log = logging.getLogger(__name__)
@@ -51,12 +50,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def not_pending(*_: object) -> JSONResponse:
         return error_response(
             status.HTTP_409_CONFLICT, "Offer is no longer pending and can no longer be changed"
-        )
-
-    @app.exception_handler(RequestNotAcceptingOffers)
-    async def request_closed(_: Request, exc: RequestNotAcceptingOffers) -> JSONResponse:
-        return error_response(
-            status.HTTP_409_CONFLICT, f"Request is not accepting offers ({exc.status})"
         )
 
     @app.exception_handler(RequestMissing)
