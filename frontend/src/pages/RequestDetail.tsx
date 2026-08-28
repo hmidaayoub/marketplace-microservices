@@ -12,7 +12,6 @@ import {
   ArrowLeftIcon,
   EyeOffIcon,
   HandshakeIcon,
-  LockIcon,
   LogInIcon,
   LogOutIcon,
   PackageIcon,
@@ -24,17 +23,6 @@ import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
 import { StatusBadge } from '@/components/status-badge'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -50,12 +38,10 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import type { Customer } from '@/api/types'
 import { isFullOffer } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
 import { createOffer, fetchOffersForRequest } from '@/store/offersSlice'
 import {
-  closeRequest,
   fetchMyRequests,
   fetchRequest,
   joinRequest,
@@ -73,7 +59,6 @@ export default function RequestDetail() {
   const user = useAppSelector((s) => s.auth.user)
   const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
   const mine = useAppSelector((s) => s.requests.mine)
-  const profile = useAppSelector((s) => s.auth.profile)
 
   useEffect(() => {
     dispatch(fetchRequest(id))
@@ -96,11 +81,6 @@ export default function RequestDetail() {
     )
   }
 
-  // createdBy is the customer who opened the request, not the account behind them -
-  // request-service stores the customerId it resolved the caller to. Comparing it to
-  // the userId matched nothing, so the owner was never offered Close request.
-  const customerId = user?.role === 'CUSTOMER' ? (profile as Customer | null)?.customerId : undefined
-  const isOwner = Boolean(customerId) && request.createdBy === customerId
   const isOpen = request.status === 'OPEN'
   // The creator is added as a participant when the request is made, so an owner is
   // always joined and never sees Join either.
@@ -134,7 +114,7 @@ export default function RequestDetail() {
       <ErrorAlert>{requestError || offerError}</ErrorAlert>
 
       {user?.role === 'CUSTOMER' && isOpen && (
-        <Participation id={id} isOwner={isOwner} hasJoined={hasJoined} />
+        <Participation id={id} hasJoined={hasJoined} />
       )}
       {user?.role === 'SELLER' && isOpen && <OfferForm requestId={id} />}
       {!signedIn && isOpen && <SignInToTakePart />}
@@ -259,15 +239,7 @@ function Stat({
   )
 }
 
-function Participation({
-  id,
-  isOwner,
-  hasJoined,
-}: {
-  id: string
-  isOwner: boolean
-  hasJoined: boolean
-}) {
+function Participation({ id, hasJoined }: { id: string; hasJoined: boolean }) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
   const [quantity, setQuantity] = useState(1)
@@ -295,7 +267,6 @@ function Participation({
           {hasJoined
             ? 'You are on this request. Change the quantity you asked for, or leave it.'
             : 'Joining adds your quantity to the total.'}
-          {isOwner && ' Closing notifies every participant.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap items-end gap-3">
@@ -348,32 +319,6 @@ function Participation({
           </Button>
         )}
 
-        {isOwner && (
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" className="ml-auto">
-                <LockIcon />
-                Close request
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Close this request?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Every participant is notified, and no further offers can be made against it.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Keep it open</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => run(dispatch(closeRequest(id)), 'Request closed')}
-                >
-                  Close request
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        )}
       </CardContent>
     </Card>
   )

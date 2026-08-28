@@ -18,7 +18,6 @@ from app.security import (
     Principal,
     require_role,
 )
-from app.service import REQUEST_STATES_CLOSED_TO_OFFERS, RequestNotAcceptingOffers
 
 router = APIRouter(prefix="/api/offers", tags=["offers"])
 
@@ -46,9 +45,11 @@ async def submit_offer(
 
     seller_id = await clients.resolve_seller_id(principal.user_id)
 
-    purchase_request = await clients.get_request(payload.request_id)
-    if purchase_request.status in REQUEST_STATES_CLOSED_TO_OFFERS:
-        raise RequestNotAcceptingOffers(purchase_request.status)
+    # The request still has to exist - that is R5 - but its status is no longer consulted.
+    # A request is OPEN or INACTIVE, neither is terminal, and an INACTIVE one can be
+    # revived by a single join, so refusing an offer against it would only mean refusing
+    # a seller who is early.
+    await clients.get_request(payload.request_id)
 
     # Resolved before the offer is written, because it is a network call: section 18
     # addresses NEW_OFFER to "Admin" rather than to one person, and notification-service

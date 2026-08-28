@@ -26,15 +26,9 @@ class OfferNotPending(Exception):
     the price afterwards would change what the admin actually approved."""
 
 
-# Requests in these states are no longer taking offers. OFFER_PENDING still is: several
-# sellers compete on the same demand until an admin picks one.
-REQUEST_STATES_CLOSED_TO_OFFERS = frozenset({"OFFER_APPROVED", "CLOSED", "CANCELLED"})
-
-
-class RequestNotAcceptingOffers(Exception):
-    def __init__(self, status: str):
-        super().__init__(f"request is {status}")
-        self.status = status
+# Nothing here refuses an offer on the strength of the request's status. A request is
+# OPEN or INACTIVE and neither ends it, so there is no state in which demand has gone
+# for good and an offer against it is a mistake.
 
 
 async def create_offer(

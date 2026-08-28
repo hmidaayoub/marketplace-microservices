@@ -23,7 +23,7 @@ export interface paths {
                     q?: string;
                     /** @description Filter by category */
                     category?: string;
-                    /** @description OPEN, OFFER_APPROVED or CLOSED */
+                    /** @description OPEN or INACTIVE */
                     status?: string;
                     /** @description Page size, 1-100 */
                     limit?: number;
@@ -297,94 +297,6 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/requests/{requestId}/close": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Close a request
-         * @description Only the creator may close it. Closing notifies every participant in a
-         *     single fan-out event, written in the same transaction as the status change.
-         */
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path: {
-                    /** @description Request id */
-                    requestId: string;
-                };
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                /** @description OK */
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["requests.requestResponse"];
-                    };
-                };
-                /** @description Bad Request */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-                /** @description Unauthorized */
-                401: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-                /** @description Not the creator */
-                403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-                /** @description Not Found */
-                404: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-                /** @description Already closed */
-                409: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": components["schemas"]["httpx.ErrorBody"];
-                    };
-                };
-            };
-        };
         delete?: never;
         options?: never;
         head?: never;

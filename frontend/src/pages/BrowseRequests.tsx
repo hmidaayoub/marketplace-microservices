@@ -118,8 +118,7 @@ export default function BrowseRequests() {
             <SelectContent>
               <SelectItem value={ANY}>Any status</SelectItem>
               <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="OFFER_APPROVED">Offer approved</SelectItem>
-              <SelectItem value="CLOSED">Closed</SelectItem>
+              <SelectItem value="INACTIVE">No buyers</SelectItem>
             </SelectContent>
           </Select>
 

@@ -99,10 +99,9 @@ the one case the outbox exists for. A poll re-reads the table and cannot miss an
 Producers nudge it on commit, so the interval only matters when a nudge is lost.
 
 **What is still not transactional:** admin-service's `Decide` relays the offer status to
-offer-service over HTTP, and moving the request to `OFFER_APPROVED` is a second call
-after the commit. Those are commands to other services rather than notifications, so
-the outbox does not cover them; a command outbox would, at the cost of making an
-approval asynchronous. See the README.
+offer-service over HTTP. That is a command to another service rather than a
+notification, so the outbox does not cover it; a command outbox would, at the cost of
+making an approval asynchronous. See the README.
 
 **A message that cannot be processed is dead-lettered, never requeued in place.** A
 poison message requeued to the same queue is redelivered immediately and forever, which
@@ -118,12 +117,15 @@ and replay.
 | `offer.approved` | `OFFER_APPROVED` | admin-service | the seller |
 | `offer.rejected` | `OFFER_REJECTED` | admin-service | the seller |
 | `contact.access.granted` | `CONTACT_ACCESS_GRANTED` | admin-service | the seller |
-| `request.closed` | `REQUEST_CLOSED` | request-service | every participant |
 
-`REQUEST_CLOSED` is the one genuine fan-out: one event carrying a notification per
-participant, written in a single transaction with the status change. A close that
-reached some participants and not others would be worse than one that reached none,
-because the owner could not safely retry it.
+No event announces a request emptying. `REQUEST_CLOSED` was the platform's one genuine
+fan-out — a notification per participant in a single transaction with the status change
+— and it went when closing did. Nothing replaced it: a request goes `INACTIVE` when its
+last participant leaves, and there is by definition nobody left on it to tell.
+
+The guarantee it motivated outlived it. `/internal/notifications` still accepts a list
+of recipients and writes them in one transaction, because a fan-out reaching some and
+not others, with no record of which, is worse than one reaching none.
 
 Its recipients are resolved before the transaction opens - participation is recorded as
 `customerId`s and notification-service is addressed by `userId`, so the producer makes

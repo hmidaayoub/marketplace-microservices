@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -37,37 +36,19 @@ func (e *RequestExistsError) Error() string {
 
 var (
 	ErrRequestNotFound    = errors.New("request not found")
-	ErrNotRequestOwner    = errors.New("caller did not create this request")
-	ErrRequestNotClosable = errors.New("request can no longer be closed")
-	ErrInvalidStatus      = errors.New("status is not one this API may set")
 	ErrNotParticipant     = errors.New("caller is not a participant in this request")
 	ErrAlreadyParticipant = errors.New("caller has already joined this request")
-	ErrRequestNotOpen     = errors.New("request is not open")
 )
 
-// StatusOpen is the only status in which participants may be added, changed or
-// removed. Once an offer is in flight the demand an offer was made against must stop
-// moving, so every participant mutation is gated on it.
+// A request describes demand, and demand does not end - it only stops having anyone
+// behind it. So there are two statuses and neither is terminal: OPEN while at least one
+// customer wants the item, INACTIVE once the last one leaves, and a join makes it OPEN
+// again. Both are written by RecalculateDemand from the participant count, which is why
+// nothing here sets a status and no API accepts one.
 const (
-	StatusOpen          = "OPEN"
-	StatusOfferPending  = "OFFER_PENDING"
-	StatusOfferApproved = "OFFER_APPROVED"
-	StatusClosed        = "CLOSED"
-	StatusCancelled     = "CANCELLED"
+	StatusOpen     = "OPEN"
+	StatusInactive = "INACTIVE"
 )
-
-// A request can still be closed once offers are in flight - the demand is the owner's
-// to withdraw - but a decided or already-terminal request has nothing left to close.
-var closableStatuses = map[string]bool{StatusOpen: true, StatusOfferPending: true}
-
-// What Admin/Contact may set through the internal API. It decides offers, not demand,
-// so it can move a request forward but cannot reopen one.
-var internalSettableStatuses = map[string]bool{
-	StatusOfferPending:  true,
-	StatusOfferApproved: true,
-	StatusClosed:        true,
-	StatusCancelled:     true,
-}
 
 // How close two item names have to be before the platform offers one as a match.
 //
@@ -342,21 +323,22 @@ func (s *Service) mutateParticipants(
 	var updated store.PurchaseRequest
 
 	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		request, err := q.LockRequest(ctx, requestID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		// The lock still matters - it is what serializes concurrent joins so the totals
+		// below cannot be computed from a snapshot missing one - but the row it returns
+		// is no longer read: there is no status left to gate on.
+		if _, err := q.LockRequest(ctx, requestID); errors.Is(err, pgx.ErrNoRows) {
 			return ErrRequestNotFound
-		}
-		if err != nil {
+		} else if err != nil {
 			return fmt.Errorf("locking request: %w", err)
 		}
-		if request.Status != StatusOpen {
-			return fmt.Errorf("%w: status is %s", ErrRequestNotOpen, request.Status)
-		}
-
+		// Deliberately ungated. An INACTIVE request is one nobody is on rather than one
+		// that has ended, so joining it is how it comes back - refusing here would make
+		// the last customer to leave the one who closed it for good.
 		if err := mutate(q, tx); err != nil {
 			return err
 		}
 
+		var err error
 		updated, err = q.RecalculateDemand(ctx, requestID)
 		if err != nil {
 			return fmt.Errorf("recalculating demand: %w", err)
@@ -371,116 +353,15 @@ func (s *Service) mutateParticipants(
 	return updated, err
 }
 
+// Nothing sets a status. Close and SetStatus lived here: the owner ended the request
+// for everyone, and Admin/Contact marked it approved. Both are gone - an owner is a
+// participant like any other and leaves, and an approval decides a seller rather than
+// the demand. What is left of either is RecalculateDemand deriving the status from who
+// is still on the request.
+
 // inTx hands the callback both the generated queries and the raw transaction: the
 // domain writes go through sqlc, and the outbox insert needs the tx itself, but they
 // have to be the same transaction for the outbox to mean anything.
-// CloseInput carries the recipients of REQUEST_CLOSED alongside the caller.
-type CloseInput struct {
-	RequestID  uuid.UUID
-	CustomerID uuid.UUID
-
-	// customerId -> userId for every participant, resolved by the caller before the
-	// transaction opens. Resolution is a network call per participant and holding a row
-	// lock across those is how a slow dependency becomes a database outage.
-	Recipients map[uuid.UUID]uuid.UUID
-	ItemName   string
-}
-
-// Close ends a request and tells everyone who wanted the item (spec section 18).
-//
-// Only the customer who created it may close it: the other participants joined someone
-// else's demand and withdrawing it is not theirs to do. The notification goes to all of
-// them, which is the one fan-out in the platform - and it is written to the outbox in
-// the same transaction as the status change, so nobody is told about a close that
-// rolled back and nobody is left uninformed about one that did not.
-func (s *Service) Close(ctx context.Context, in CloseInput) (store.PurchaseRequest, error) {
-	var closed store.PurchaseRequest
-
-	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		request, err := q.LockRequest(ctx, in.RequestID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRequestNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("locking request: %w", err)
-		}
-
-		// An unknown owner - a pre-migration request whose participants all left - can
-		// be closed by nobody, which is the honest answer rather than by anybody.
-		if !request.CreatedBy.Valid || uuid.UUID(request.CreatedBy.Bytes) != in.CustomerID {
-			return ErrNotRequestOwner
-		}
-		if !closableStatuses[request.Status] {
-			return fmt.Errorf("%w: status is %s", ErrRequestNotClosable, request.Status)
-		}
-
-		closed, err = q.SetRequestStatus(ctx, store.SetRequestStatusParams{
-			RequestID: in.RequestID,
-			Status:    StatusClosed,
-		})
-		if err != nil {
-			return fmt.Errorf("closing request: %w", err)
-		}
-
-		// Read inside the transaction, behind the same lock joins take, so the set
-		// cannot change under us. A participant we could not resolve a userId for is
-		// skipped rather than blocking the close.
-		customerIDs, err := q.ListParticipantCustomerIDs(ctx, in.RequestID)
-		if err != nil {
-			return fmt.Errorf("reading participants: %w", err)
-		}
-
-		notifications := make([]events.Notification, 0, len(customerIDs))
-		for _, customerID := range customerIDs {
-			userID, ok := in.Recipients[customerID]
-			if !ok {
-				slog.WarnContext(ctx, "no userId for participant; not notifying them",
-					"requestId", in.RequestID, "customerId", customerID)
-				continue
-			}
-			notifications = append(notifications, events.Notification{
-				UserID: userID,
-				Type:   "REQUEST_CLOSED",
-				Title:  "A request you joined was closed",
-				Message: fmt.Sprintf(
-					"The request for %s has been closed by the customer who created it.",
-					closed.ItemName),
-			})
-		}
-
-		return events.Enqueue(ctx, tx, events.KeyRequestClosed, notifications...)
-	})
-
-	s.wakeRelay()
-	return closed, err
-}
-
-// SetStatus backs the internal status API, which is how Admin/Contact moves a request
-// to OFFER_APPROVED once it has approved an offer against it. No notification: the
-// seller is told by Admin/Contact, and the customers have not lost anything yet.
-func (s *Service) SetStatus(ctx context.Context, requestID uuid.UUID, status string) (store.PurchaseRequest, error) {
-	if !internalSettableStatuses[status] {
-		return store.PurchaseRequest{}, fmt.Errorf("%w: %s", ErrInvalidStatus, status)
-	}
-
-	var updated store.PurchaseRequest
-	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
-		if _, err := q.LockRequest(ctx, requestID); errors.Is(err, pgx.ErrNoRows) {
-			return ErrRequestNotFound
-		} else if err != nil {
-			return fmt.Errorf("locking request: %w", err)
-		}
-
-		var err error
-		updated, err = q.SetRequestStatus(ctx, store.SetRequestStatusParams{
-			RequestID: requestID,
-			Status:    status,
-		})
-		return err
-	})
-	return updated, err
-}
-
 func (s *Service) inTx(ctx context.Context, fn func(*store.Queries, pgx.Tx) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

@@ -25,7 +25,6 @@ const (
 // Narrowing it here keeps the tests free of an HTTP stub for cases that never call out.
 type customerResolver interface {
 	ResolveCustomerID(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
-	ResolveUserID(ctx context.Context, customerID uuid.UUID) (uuid.UUID, error)
 }
 
 type Handler struct {
@@ -146,7 +145,7 @@ func (h *Handler) Similar(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Param		q			query		string	false	"Match on item name"
 //	@Param		category	query		string	false	"Filter by category"
-//	@Param		status		query		string	false	"OPEN, OFFER_APPROVED or CLOSED"
+//	@Param		status		query		string	false	"OPEN or INACTIVE"
 //	@Param		limit		query		int		false	"Page size, 1-100"	default(20)
 //	@Param		offset		query		int		false	"Rows to skip"		default(0)
 //	@Success	200			{array}		requestResponse
@@ -366,102 +365,6 @@ func (h *Handler) Leave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Close handles POST /api/requests/{requestId}/close.
-//
-//	@Summary	Close a request
-//	@Description Only the creator may close it. Closing notifies every participant in a
-//	@Description single fan-out event, written in the same transaction as the status change.
-//	@Tags		requests
-//	@Produce	json
-//	@Param		requestId	path		string	true	"Request id"	format(uuid)
-//	@Success	200			{object}	requestResponse
-//	@Failure	400			{object}	httpx.ErrorBody
-//	@Failure	401			{object}	httpx.ErrorBody
-//	@Failure	403			{object}	httpx.ErrorBody	"Not the creator"
-//	@Failure	404			{object}	httpx.ErrorBody
-//	@Failure	409			{object}	httpx.ErrorBody	"Already closed"
-//	@Security	bearerAuth
-//	@Router		/api/requests/{requestId}/close [post]
-func (h *Handler) Close(w http.ResponseWriter, r *http.Request) {
-	requestID, ok := pathUUID(w, r, "requestId")
-	if !ok {
-		return
-	}
-
-	customerID, ok := h.callerCustomerID(w, r)
-	if !ok {
-		return
-	}
-
-	// Resolved before the transaction: closing tells every participant, and each one
-	// needs a userId that only customer-service can supply. A participant whose lookup
-	// fails is simply not notified - see Close.
-	recipients, err := h.participantUserIDs(r, requestID)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-
-	closed, err := h.service.Close(r.Context(), CloseInput{
-		RequestID:  requestID,
-		CustomerID: customerID,
-		Recipients: recipients,
-	})
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-
-	httpx.JSON(w, http.StatusOK, toResponse(closed))
-}
-
-// participantUserIDs maps every participant to the userId a notification is addressed
-// to. One unresolvable participant does not fail the close: the request is the owner's
-// to end, and a customer-service blip must not stand in the way of that.
-func (h *Handler) participantUserIDs(r *http.Request, requestID uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
-	customerIDs, err := h.service.ParticipantCustomerIDs(r.Context(), requestID)
-	if err != nil {
-		return nil, err
-	}
-
-	recipients := make(map[uuid.UUID]uuid.UUID, len(customerIDs))
-	for _, customerID := range customerIDs {
-		userID, err := h.customers.ResolveUserID(r.Context(), customerID)
-		if err != nil {
-			slog.WarnContext(r.Context(), "cannot address a participant; closing without them",
-				"customerId", customerID, "error", err)
-			continue
-		}
-		recipients[customerID] = userID
-	}
-	return recipients, nil
-}
-
-// InternalSetStatus handles PATCH /internal/requests/{requestId}/status.
-//
-// How Admin/Contact moves a request to OFFER_APPROVED once it has approved an offer.
-// Offer-service already refuses new offers against a request in that state, so until
-// something made the transition that guard could never fire.
-func (h *Handler) InternalSetStatus(w http.ResponseWriter, r *http.Request) {
-	requestID, ok := pathUUID(w, r, "requestId")
-	if !ok {
-		return
-	}
-
-	var body statusBody
-	if !httpx.DecodeJSON(w, r, &body) {
-		return
-	}
-
-	updated, err := h.service.SetStatus(r.Context(), requestID, body.Status)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-
-	httpx.JSON(w, http.StatusOK, toResponse(updated))
-}
-
 // InternalGet handles GET /internal/requests/{requestId}, used by other services to
 // validate that a request exists before acting on it.
 func (h *Handler) InternalGet(w http.ResponseWriter, r *http.Request) {
@@ -550,16 +453,6 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, http.StatusNotFound, "You have not joined this request")
 	case errors.Is(err, ErrAlreadyParticipant):
 		httpx.Error(w, http.StatusConflict, "You have already joined this request")
-	case errors.Is(err, ErrRequestNotOpen):
-		httpx.Error(w, http.StatusConflict, "Request is no longer open")
-	case errors.Is(err, ErrRequestNotClosable):
-		httpx.Error(w, http.StatusConflict, "Request can no longer be closed")
-	case errors.Is(err, ErrInvalidStatus):
-		httpx.Error(w, http.StatusBadRequest, "status must be one of OFFER_PENDING, OFFER_APPROVED, CLOSED, CANCELLED")
-
-	// Not 404: the caller can see the request, they simply did not create it.
-	case errors.Is(err, ErrNotRequestOwner):
-		httpx.Error(w, http.StatusForbidden, "Only the customer who created this request may close it")
 	default:
 		slog.ErrorContext(r.Context(), "unhandled error", "path", r.URL.Path, "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "Internal server error")

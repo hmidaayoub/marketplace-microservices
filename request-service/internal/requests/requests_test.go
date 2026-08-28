@@ -242,16 +242,16 @@ func TestCreateRequest_keepsANameThatIsEntirelyFiller(t *testing.T) {
 	}
 }
 
-// Only open demand pools. A closed request is not something a customer can join, so
-// naming it again opens a fresh one rather than failing.
-func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsClosed(t *testing.T) {
+// Only open demand pools. A request nobody is on has no demand to join, so naming the
+// item again opens a fresh one rather than being refused for a duplicate.
+func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsInactive(t *testing.T) {
 	h := newHarness(t)
 	_, owner := h.newCustomer()
 	_, other := h.newCustomer()
 
-	closedID := h.createRequest(owner, "Espresso Machine", 3)
-	if res := h.do(http.MethodPost, "/api/requests/"+closedID+"/close", owner, ""); res.code != http.StatusOK {
-		t.Fatalf("closing: status %d body %s", res.code, res.raw)
+	emptiedID := h.createRequest(owner, "Espresso Machine", 3)
+	if res := h.do(http.MethodDelete, "/api/requests/"+emptiedID+"/participants/me", owner, ""); res.code != http.StatusNoContent {
+		t.Fatalf("leaving: status %d body %s", res.code, res.raw)
 	}
 
 	res := h.do(http.MethodPost, "/api/requests", other,
@@ -260,8 +260,8 @@ func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsClosed(t *testing.T) 
 	if res.code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
 	}
-	if got := res.body["requestId"]; got == closedID {
-		t.Error("matched the closed request instead of opening a new one")
+	if got := res.body["requestId"]; got == emptiedID {
+		t.Error("matched the emptied request instead of opening a new one")
 	}
 }
 
@@ -736,7 +736,6 @@ func TestWritingDemand_stillRejectsUnauthenticated(t *testing.T) {
 		{http.MethodPost, "/api/requests/" + requestID + "/participants", `{"quantity":1}`},
 		{http.MethodPut, "/api/requests/" + requestID + "/participants/me", `{"quantity":2}`},
 		{http.MethodDelete, "/api/requests/" + requestID + "/participants/me", ""},
-		{http.MethodPost, "/api/requests/" + requestID + "/close", ""},
 	} {
 		t.Run(call.method+" "+call.path, func(t *testing.T) {
 			if res := h.do(call.method, call.path, "", call.body); res.code != http.StatusUnauthorized {
@@ -1082,186 +1081,108 @@ func TestCommittingAnEventWakesTheRelay(t *testing.T) {
 	}
 }
 
-// --- closing a request (spec section 18: REQUEST_CLOSED) --------------------------------
+// --- the lifecycle: OPEN while anyone wants the item, INACTIVE when nobody does -------
 
-func TestClosingARequestNotifiesEveryParticipant(t *testing.T) {
+// A request does not end, it empties. The status follows the participant count rather
+// than any call, so there is nothing to set and nothing that can disagree with it.
+func TestARequestGoesInactiveWhenTheLastParticipantLeaves(t *testing.T) {
 	h := newHarness(t)
-	ownerID, owner := h.newCustomer()
-	joinerID, joiner := h.newCustomer()
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
 
+	if res := h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, ""); res.code != http.StatusNoContent {
+		t.Fatalf("leave: status %d body %s", res.code, res.raw)
+	}
+
+	res := h.do(http.MethodGet, "/api/requests/"+requestID, owner, "")
+	if got := res.body["status"]; got != StatusInactive {
+		t.Errorf("status = %v, want INACTIVE", got)
+	}
+	if got := res.body["totalCustomers"]; got != float64(0) {
+		t.Errorf("totalCustomers = %v, want 0", got)
+	}
+	if got := res.body["totalQuantity"]; got != float64(0) {
+		t.Errorf("totalQuantity = %v, want 0", got)
+	}
+}
+
+// The owner is a participant like any other. Their leaving empties the request only
+// because they were the last one on it, not because it was theirs.
+func TestARequestStaysOpenWhileAnyoneIsStillOnIt(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, joiner := h.newCustomer()
 	requestID := h.createRequest(owner, "Espresso Machine", 3)
 	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`); res.code != http.StatusCreated {
 		t.Fatalf("join: status %d body %s", res.code, res.raw)
 	}
-	before := len(h.outbox())
 
-	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, "")
-	if res.code != http.StatusOK {
-		t.Fatalf("close: status %d body %s", res.code, res.raw)
-	}
-	if got := res.body["status"]; got != StatusClosed {
-		t.Errorf("status = %v, want CLOSED", got)
+	if res := h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, ""); res.code != http.StatusNoContent {
+		t.Fatalf("owner leaves: status %d body %s", res.code, res.raw)
 	}
 
-	outbox := h.outbox()
-	if len(outbox) != before+1 {
-		t.Fatalf("close wrote %d events, want 1", len(outbox)-before)
+	res := h.do(http.MethodGet, "/api/requests/"+requestID, joiner, "")
+	if got := res.body["status"]; got != StatusOpen {
+		t.Errorf("status = %v, want OPEN - the joiner still wants the item", got)
 	}
-	closed := outbox[len(outbox)-1]
-	if closed.routingKey != events.KeyRequestClosed {
-		t.Errorf("routing key = %q, want %q", closed.routingKey, events.KeyRequestClosed)
-	}
-
-	// One event carrying every participant, so the fan-out is one transaction: all of
-	// them are told, or none is.
-	recipients := map[uuid.UUID]bool{}
-	for _, n := range closed.notifications {
-		recipients[n.UserID] = true
-		if n.Type != "REQUEST_CLOSED" {
-			t.Errorf("type = %q, want REQUEST_CLOSED", n.Type)
-		}
-		if !strings.Contains(n.Message, "Espresso Machine") {
-			t.Errorf("message does not name the item: %q", n.Message)
-		}
-	}
-	if !recipients[ownerID] || !recipients[joinerID] || len(recipients) != 2 {
-		t.Errorf("recipients = %v, want both the owner and the joiner", recipients)
+	if got := res.body["totalQuantity"]; got != float64(5) {
+		t.Errorf("totalQuantity = %v, want 5", got)
 	}
 }
 
-// Closing withdraws demand other people joined, so it is the creator's to do.
-func TestOnlyTheCreatorMayCloseARequest(t *testing.T) {
-	h := newHarness(t)
-	_, owner := h.newCustomer()
-	_, joiner := h.newCustomer()
-
-	requestID := h.createRequest(owner, "Espresso Machine", 3)
-	h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":5}`)
-	before := len(h.outbox())
-
-	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", joiner, "")
-	if res.code != http.StatusForbidden {
-		t.Fatalf("participant closing: status %d, want 403; body %s", res.code, res.raw)
-	}
-	// 403 rather than 404: they can already read the request, they just did not create it.
-	if after := len(h.outbox()); after != before {
-		t.Errorf("a refused close wrote %d events, want none", after-before)
-	}
-
-	// And it really is still open.
-	got := h.do(http.MethodGet, "/api/requests/"+requestID, joiner, "")
-	if got.body["status"] != StatusOpen {
-		t.Errorf("status = %v, want it left OPEN", got.body["status"])
-	}
-}
-
-func TestClosingTwiceIsAConflict(t *testing.T) {
-	h := newHarness(t)
-	_, owner := h.newCustomer()
-	requestID := h.createRequest(owner, "Espresso Machine", 3)
-
-	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, ""); res.code != http.StatusOK {
-		t.Fatalf("first close: status %d body %s", res.code, res.raw)
-	}
-	before := len(h.outbox())
-
-	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, ""); res.code != http.StatusConflict {
-		t.Fatalf("second close: status %d, want 409; body %s", res.code, res.raw)
-	}
-	if after := len(h.outbox()); after != before {
-		t.Error("the second close announced itself again")
-	}
-}
-
-// Once closed, the demand stops moving - which is what the participants were told.
-func TestAClosedRequestAcceptsNoMoreParticipants(t *testing.T) {
+// INACTIVE is not terminal. Refusing a join here would make whoever left last the
+// person who ended the request for everyone after them.
+func TestJoiningAnInactiveRequestOpensItAgain(t *testing.T) {
 	h := newHarness(t)
 	_, owner := h.newCustomer()
 	_, joiner := h.newCustomer()
 	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, "")
 
-	h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, "")
-
-	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":1}`)
-	if res.code != http.StatusConflict {
-		t.Errorf("joining a closed request: status %d, want 409", res.code)
+	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":2}`)
+	if res.code != http.StatusCreated {
+		t.Fatalf("joining an inactive request: status %d body %s", res.code, res.raw)
+	}
+	if got := res.body["status"]; got != StatusOpen {
+		t.Errorf("status = %v, want OPEN again", got)
+	}
+	if got := res.body["totalQuantity"]; got != float64(2) {
+		t.Errorf("totalQuantity = %v, want 2", got)
 	}
 }
 
-func TestClosingRequiresACustomerAndAValidId(t *testing.T) {
-	h := newHarness(t)
-	_, owner := h.newCustomer()
-	requestID := h.createRequest(owner, "Espresso Machine", 3)
-
-	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", "", ""); res.code != http.StatusUnauthorized {
-		t.Errorf("no token: status %d, want 401", res.code)
-	}
-	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", h.token(uuid.New(), auth.RoleSeller), ""); res.code != http.StatusForbidden {
-		t.Errorf("as a seller: status %d, want 403", res.code)
-	}
-	if res := h.do(http.MethodPost, "/api/requests/not-a-uuid/close", owner, ""); res.code != http.StatusBadRequest {
-		t.Errorf("malformed id: status %d, want 400", res.code)
-	}
-	if res := h.do(http.MethodPost, "/api/requests/"+uuid.New().String()+"/close", owner, ""); res.code != http.StatusNotFound {
-		t.Errorf("unknown request: status %d, want 404", res.code)
-	}
-}
-
-// --- the internal status API -----------------------------------------------------------
-
-// Offer-service already refuses offers against an OFFER_APPROVED request; until
-// something made that transition, the guard could never fire.
-func TestInternalStatusMovesARequestForward(t *testing.T) {
+// Emptying a request is not an event. Nobody is left on it to be told, and the customer
+// who left already knows.
+func TestEmptyingARequestWritesNoEvent(t *testing.T) {
 	h := newHarness(t)
 	_, owner := h.newCustomer()
 	requestID := h.createRequest(owner, "Espresso Machine", 3)
 	before := len(h.outbox())
 
-	res := h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
-		testInternalAPIKey, `{"status":"OFFER_APPROVED"}`)
-	if res.code != http.StatusOK {
-		t.Fatalf("status %d body %s", res.code, res.raw)
-	}
-	if got := res.body["status"]; got != StatusOfferApproved {
-		t.Errorf("status = %v, want OFFER_APPROVED", got)
-	}
+	h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, "")
 
-	// No notification: the seller is told by Admin/Contact, and the customers have not
-	// lost anything yet.
 	if after := len(h.outbox()); after != before {
-		t.Errorf("a status change announced itself; that is Admin/Contact's job")
+		t.Errorf("wrote %d events, want none", after-before)
 	}
 }
 
-func TestInternalStatusRejectsWhatItMayNotSet(t *testing.T) {
+// Both of these ended a request from outside its participants. Neither exists: the
+// owner has no power to close, and Admin/Contact decides offers rather than demand.
+func TestThereIsNoWayToEndARequestFromOutside(t *testing.T) {
 	h := newHarness(t)
 	_, owner := h.newCustomer()
 	requestID := h.createRequest(owner, "Espresso Machine", 3)
 
-	// Reopening is not Admin/Contact's to do.
+	if res := h.do(http.MethodPost, "/api/requests/"+requestID+"/close", owner, ""); res.code != http.StatusNotFound {
+		t.Errorf("POST /close: status %d, want 404 - the route is gone", res.code)
+	}
 	res := h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
-		testInternalAPIKey, `{"status":"OPEN"}`)
-	if res.code != http.StatusBadRequest {
-		t.Errorf("setting OPEN: status %d, want 400; body %s", res.code, res.raw)
+		testInternalAPIKey, `{"status":"CLOSED"}`)
+	if res.code != http.StatusNotFound {
+		t.Errorf("PATCH /internal status: status %d, want 404 - the route is gone", res.code)
 	}
 
-	res = h.doInternalWithBody(http.MethodPatch, "/internal/requests/"+requestID+"/status",
-		testInternalAPIKey, `{"status":"NONSENSE"}`)
-	if res.code != http.StatusBadRequest {
-		t.Errorf("unknown status: status %d, want 400", res.code)
-	}
-}
-
-func TestInternalStatusRequiresTheSharedKey(t *testing.T) {
-	h := newHarness(t)
-	_, owner := h.newCustomer()
-	requestID := h.createRequest(owner, "Espresso Machine", 3)
-	path := "/internal/requests/" + requestID + "/status"
-
-	if res := h.doInternalWithBody(http.MethodPatch, path, "", `{"status":"CLOSED"}`); res.code != http.StatusUnauthorized {
-		t.Errorf("no key: status %d, want 401", res.code)
-	}
-	if res := h.doInternalWithBody(http.MethodPatch, path, "wrong-key", `{"status":"CLOSED"}`); res.code != http.StatusUnauthorized {
-		t.Errorf("wrong key: status %d, want 401", res.code)
+	if got := h.do(http.MethodGet, "/api/requests/"+requestID, owner, "").body["status"]; got != StatusOpen {
+		t.Errorf("status = %v, want it untouched at OPEN", got)
 	}
 }

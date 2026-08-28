@@ -152,20 +152,6 @@ export const leaveRequest = createAsyncThunk<
   }
 })
 
-export const closeRequest = createAsyncThunk<
-  PurchaseRequest,
-  string,
-  { state: RootState; rejectValue: string }
->('requests/close', async (id, { getState, rejectWithValue }) => {
-  try {
-    return await api<PurchaseRequest>(`/api/requests/${id}/close`, {
-      method: 'POST',
-      token: tokenOf(getState()),
-    })
-  } catch (error) {
-    return rejectWithValue(error instanceof ApiError ? error.message : 'Could not close')
-  }
-})
 
 const requestsSlice = createSlice({
   name: 'requests',
@@ -221,13 +207,11 @@ const requestsSlice = createSlice({
           state.mine.unshift(joined)
         }
       })
-      // Join, update and close all return the request in its new state, so one handler
-      // keeps every copy the app is holding in step.
+      // Join and update both return the request in its new state, so one handler keeps
+      // every copy the app is holding in step.
       .addMatcher(
         (action): action is { type: string; payload: PurchaseRequest } =>
-          [joinRequest.fulfilled.type, updateQuantity.fulfilled.type, closeRequest.fulfilled.type].includes(
-            action.type,
-          ),
+          [joinRequest.fulfilled.type, updateQuantity.fulfilled.type].includes(action.type),
         (state, action) => {
           const updated = action.payload
           state.current = updated

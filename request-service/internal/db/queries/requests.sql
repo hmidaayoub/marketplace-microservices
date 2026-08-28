@@ -129,10 +129,16 @@ ORDER BY joined_at;
 
 -- R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
 -- from request_participant in the same transaction as the mutation that changed it.
+--
+-- The status is recomputed with them, because it is the same fact: a request nobody is
+-- on is INACTIVE, and the join that puts someone back on it makes it OPEN again. That
+-- makes the status derived rather than commanded - there is no call that sets it, so
+-- it can never disagree with the participants it describes.
 -- name: RecalculateDemand :one
 UPDATE purchase_request pr
 SET total_customers = d.total_customers,
     total_quantity  = d.total_quantity,
+    status          = CASE WHEN d.total_customers = 0 THEN 'INACTIVE' ELSE 'OPEN' END,
     updated_at      = now()
 FROM (
     SELECT COUNT(*)::int                       AS total_customers,
@@ -142,11 +148,3 @@ FROM (
 ) d
 WHERE pr.request_id = @request_id
 RETURNING pr.*;
-
--- Sets a terminal or in-flight status. Used by the owner closing their own request and,
--- through the internal API, by Admin/Contact once an offer has been approved.
--- name: SetRequestStatus :one
-UPDATE purchase_request
-SET status = @status, updated_at = now()
-WHERE request_id = @request_id
-RETURNING *;

@@ -87,24 +87,27 @@ async def test_submit_offer_rejects_unknown_request(client: AsyncClient, upstrea
     assert "request" in response.json()["message"].lower()
 
 
-@pytest.mark.parametrize("request_status", ["OFFER_APPROVED", "CLOSED", "CANCELLED"])
-async def test_submit_offer_rejected_when_request_closed(
+@pytest.mark.parametrize("request_status", ["OPEN", "INACTIVE"])
+async def test_submit_offer_accepted_whatever_the_request_status(
     client: AsyncClient, upstream: FakeUpstream, request_status: str
 ):
+    """No status refuses an offer any more. A request is OPEN or INACTIVE, neither ends
+    it, and one join revives an empty one - so refusing here only turns away a seller
+    who was early."""
     _, _, token = await _seller(client, upstream)
     request_id = await _open_request(upstream, request_status)
 
     response = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
 
-    assert response.status_code == 409
+    assert response.status_code == 201
 
 
 async def test_submit_offer_allowed_while_other_offers_pending(
     client: AsyncClient, upstream: FakeUpstream
 ):
-    """Several sellers compete on the same demand until an admin picks one."""
+    """Several sellers compete on the same demand, and an approval no longer ends it."""
     _, _, token = await _seller(client, upstream)
-    request_id = await _open_request(upstream, "OFFER_PENDING")
+    request_id = await _open_request(upstream, "OPEN")
 
     response = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
 

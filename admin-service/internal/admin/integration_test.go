@@ -434,6 +434,20 @@ func (h *harness) newOffer(sellerID uuid.UUID, customerIDs ...uuid.UUID) (uuid.U
 	return offerID, requestID
 }
 
+// newOfferOn puts a second PENDING offer, from another seller, against a request that
+// already has one - the case an approval no longer ends.
+func (h *harness) newOfferOn(requestID, sellerID uuid.UUID) uuid.UUID {
+	h.t.Helper()
+	offerID := uuid.New()
+	h.p.mu.Lock()
+	h.p.offers[offerID] = &clients.Offer{
+		OfferID: offerID, RequestID: requestID, SellerID: sellerID,
+		AvailableQuantity: 10, PricePerUnit: "8.99", Currency: "EUR", Status: statusPending,
+	}
+	h.p.mu.Unlock()
+	return offerID
+}
+
 func (h *harness) offerStatus(offerID uuid.UUID) string {
 	h.t.Helper()
 	h.p.mu.Lock()

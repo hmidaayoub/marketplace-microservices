@@ -731,7 +731,10 @@ func TestCommittingADecisionWakesTheRelay(t *testing.T) {
 
 // Offer-service already refuses new offers against an OFFER_APPROVED request; until
 // something made that transition the guard could never fire.
-func TestApprovingAnOfferMarksTheRequestApproved(t *testing.T) {
+// An approval decides which seller may reach the buyers. Whether those buyers still
+// want the item is a different question, and not this service's to answer - so
+// request-service is told nothing at all.
+func TestApprovingAnOfferLeavesTheRequestAlone(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
 	_, sellerID, _ := h.newSeller()
@@ -743,8 +746,39 @@ func TestApprovingAnOfferMarksTheRequestApproved(t *testing.T) {
 
 	h.p.mu.Lock()
 	defer h.p.mu.Unlock()
-	if got := h.p.requestStatus[requestID]; got != "OFFER_APPROVED" {
-		t.Errorf("request-service was told %q, want OFFER_APPROVED", got)
+	if got, ok := h.p.requestStatus[requestID]; ok {
+		t.Errorf("request-service was told %q; an approval must not touch the request", got)
+	}
+}
+
+// Nothing ends a request after the first approval, so more than one seller can win the
+// same demand. One decision per offer still holds - the unique constraint is on the
+// offer - and each approval grants its own seller the contacts.
+func TestSeveralOffersOnOneRequestCanEachBeApproved(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, firstSeller, _ := h.newSeller()
+	_, secondSeller, _ := h.newSeller()
+	first, requestID := h.newOffer(firstSeller, h.newCustomer("+21611111111"), h.newCustomer("+21622222222"))
+	second := h.newOfferOn(requestID, secondSeller)
+
+	if res := h.approve(adminToken, first); res.code != http.StatusCreated {
+		t.Fatalf("first approve: status %d body %s", res.code, res.raw)
+	}
+	res := h.approve(adminToken, second)
+	if res.code != http.StatusCreated {
+		t.Fatalf("second approve: status %d, want 201; body %s", res.code, res.raw)
+	}
+	if got := num(t, res.body, "contactsGranted"); got != 2 {
+		t.Errorf("contactsGranted = %d, want 2 - the second seller is granted them too", got)
+	}
+
+	// Two sellers, two customers each: every grant is its own row.
+	if got := countRows(t, "contact_access"); got != 4 {
+		t.Errorf("contact_access rows = %d, want 4", got)
+	}
+	if got := countRows(t, "offer_decision"); got != 2 {
+		t.Errorf("offer_decision rows = %d, want 2", got)
 	}
 }
 

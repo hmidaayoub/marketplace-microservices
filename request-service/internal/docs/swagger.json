@@ -134,7 +134,7 @@
                         }
                     },
                     {
-                        "description": "OPEN, OFFER_APPROVED or CLOSED",
+                        "description": "OPEN or INACTIVE",
                         "in": "query",
                         "name": "status",
                         "schema": {
@@ -416,94 +416,6 @@
                     }
                 },
                 "summary": "Read one request with its aggregated demand",
-                "tags": [
-                    "requests"
-                ]
-            }
-        },
-        "/api/requests/{requestId}/close": {
-            "post": {
-                "description": "Only the creator may close it. Closing notifies every participant in a\nsingle fan-out event, written in the same transaction as the status change.",
-                "parameters": [
-                    {
-                        "description": "Request id",
-                        "in": "path",
-                        "name": "requestId",
-                        "required": true,
-                        "schema": {
-                            "format": "uuid",
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/requests.requestResponse"
-                                }
-                            }
-                        },
-                        "description": "OK"
-                    },
-                    "400": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Bad Request"
-                    },
-                    "401": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Unauthorized"
-                    },
-                    "403": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Not the creator"
-                    },
-                    "404": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Not Found"
-                    },
-                    "409": {
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/httpx.ErrorBody"
-                                }
-                            }
-                        },
-                        "description": "Already closed"
-                    }
-                },
-                "security": [
-                    {
-                        "bearerAuth": []
-                    }
-                ],
-                "summary": "Close a request",
                 "tags": [
                     "requests"
                 ]

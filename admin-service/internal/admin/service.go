@@ -42,7 +42,6 @@ const (
 	statusGranted = "GRANTED"
 
 	// What request-service is told once an offer against it has been approved.
-	statusOfferApproved = "OFFER_APPROVED"
 
 	uniqueViolation = "23505"
 )
@@ -57,7 +56,6 @@ type offerClient interface {
 
 type requestClient interface {
 	ParticipantCustomerIDs(ctx context.Context, requestID uuid.UUID) ([]uuid.UUID, error)
-	SetStatus(ctx context.Context, requestID uuid.UUID, status string) error
 }
 
 type sellerResolver interface {
@@ -252,19 +250,11 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 		return result, err
 	}
 
-	// Deliberately after the commit and deliberately best-effort. The decision, the
-	// grants and offer-service's status all agree by this point; this only tells
-	// request-service that its demand now has an approved offer, which stops further
-	// offers coming in. Failing it would mean refusing a decision that has already been
-	// made, and the worst case if it is missed is that the request keeps taking offers
-	// against demand somebody has already won.
-	if in.Decision == DecisionApproved {
-		if statusErr := s.deps.Requests.SetStatus(ctx, result.RequestID, statusOfferApproved); statusErr != nil {
-			slog.ErrorContext(ctx, "could not mark the request as having an approved offer",
-				"requestId", result.RequestID, "error", statusErr)
-		}
-	}
-
+	// An approval used to mark the request OFFER_APPROVED, which stopped further offers
+	// and ended it. It no longer touches the request at all: this service decides which
+	// seller may reach the buyers, and whether those buyers still want the item is not
+	// the same question. Several offers on one request can each be approved, and each
+	// approval grants its seller the contacts of whoever is on the request then.
 	return result, nil
 }
 
