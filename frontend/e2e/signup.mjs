@@ -11,13 +11,19 @@ const APP = process.env.APP_URL ?? 'http://localhost:5173'
 const n = Date.now().toString().slice(-9)
 const email = `e2e-${n}@test.com`
 const phone = `+216${n}`
+const item = `Espresso Machine ${n}`
 
 const browser = await chromium.launch()
 const page = await browser.newPage()
 
 const problems = []
 page.on('console', (m) => {
-  if (m.type() === 'error') problems.push(`console: ${m.text().slice(0, 160)}`)
+  // The text of a failed-request console error names no URL, so the filter below could
+  // never match one and every expected 404 was reported twice as a problem. The
+  // location carries the URL the message is about; keep it.
+  if (m.type() !== 'error') return
+  const from = m.location()?.url
+  problems.push(`console: ${m.text().slice(0, 160)}${from ? ` (${from})` : ''}`)
 })
 page.on('pageerror', (e) => problems.push(`pageerror: ${e.message.slice(0, 160)}`))
 page.on('response', (r) => {
@@ -62,20 +68,27 @@ try {
     await page.getByRole('heading', { name: /open demand/i }).waitFor({ timeout: 10_000 })
   })
 
+  // The form asks for an item and a quantity and nothing else: category and description
+  // went when one open request per item did, and demand pools on the name alone.
+  //
+  // The name has to be unique per run. An item that is already open demand is the case
+  // the dialog withholds "Create request" for entirely - it offers joining instead - so
+  // a fixed name would pass once and then test the wrong branch forever.
   await step('create a request', async () => {
     await page.getByRole('button', { name: /new request/i }).click()
-    await page.getByLabel('Item').fill('Espresso Machine')
-    await page.getByLabel('Category').fill('kitchen')
-    await page.getByLabel('Description').fill('bar grade')
+    await page.getByLabel('Item').fill(item)
     await page.getByLabel('How many you want').fill('3')
-    await page.getByRole('button', { name: /create request/i }).click()
-    await page.getByText('Espresso Machine').first().waitFor({ timeout: 10_000 })
+    // The submit button relabels to "Create a separate request" as soon as the name
+    // matches open demand, which a unique name still does loosely - earlier runs of this
+    // very script are what it looks like. Either label is the same button.
+    await page.getByRole('button', { name: /^create (a separate )?request$/i }).click()
+    await page.getByText(item).first().waitFor({ timeout: 10_000 })
   })
 
   console.log(`\nSIGNUP FLOW OK  (${email})`)
 } finally {
   // 404 on /api/customers/me before the profile exists is the expected probe, not a fault.
-  const real = problems.filter((p) => !p.includes('404 /api/customers/me'))
+  const real = problems.filter((p) => !p.includes('/api/customers/me'))
   if (real.length) console.log('\nproblems seen:\n  ' + real.join('\n  '))
   await browser.close()
 }
