@@ -296,6 +296,14 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Error(w, http.StatusNotFound, "Contact access not found")
 	case errors.Is(err, ErrOfferNotPending):
 		httpx.Error(w, http.StatusConflict, "Offer is no longer pending")
+
+	// 409 rather than 404: the offer is exactly where the admin found it, and it is the
+	// state behind it that makes the decision impossible. A rejection never reads
+	// participants, so both of these still leave a way to clear the offer off the queue.
+	case errors.Is(err, ErrRequestGone):
+		httpx.Error(w, http.StatusConflict, "The request behind this offer no longer exists")
+	case errors.Is(err, ErrRequestNoBuyers):
+		httpx.Error(w, http.StatusConflict, "The request behind this offer has no buyers left")
 	case errors.Is(err, ErrAlreadyDecided):
 		httpx.Error(w, http.StatusConflict, "Offer has already been decided")
 	case errors.Is(err, ErrAlreadyRevoked):

@@ -22,6 +22,12 @@ import (
 var (
 	ErrOfferNotFound   = errors.New("offer not found")
 	ErrOfferNotPending = errors.New("offer is no longer pending")
+
+	// Both are about the request an offer points at, not the offer itself. They exist
+	// because reporting either as ErrOfferNotFound told an admin the offer in front of
+	// them did not exist, which is the one thing they could see was untrue.
+	ErrRequestGone     = errors.New("the request behind this offer no longer exists")
+	ErrRequestNoBuyers = errors.New("the request behind this offer has no buyers left")
 	ErrAlreadyDecided  = errors.New("offer has already been decided")
 	ErrAccessNotFound  = errors.New("contact access not found")
 	ErrAlreadyRevoked  = errors.New("contact access is not currently granted")
@@ -165,10 +171,18 @@ func (s *Service) Decide(ctx context.Context, in DecideInput) (DecideResult, err
 	if in.Decision == DecisionApproved {
 		customerIDs, err = s.deps.Requests.ParticipantCustomerIDs(ctx, offer.RequestID)
 		if errors.Is(err, clients.ErrNotFound) {
-			return DecideResult{}, ErrOfferNotFound
+			return DecideResult{}, ErrRequestGone
 		}
 		if err != nil {
 			return DecideResult{}, err
+		}
+
+		// An approval exists to release the buyers' numbers, so approving a request
+		// nobody is left in would record a decision, grant nothing, and still tell the
+		// seller their access was granted. Every participant can leave - the creator is
+		// added as one and has no exemption - so this is reachable, not defensive.
+		if len(customerIDs) == 0 {
+			return DecideResult{}, ErrRequestNoBuyers
 		}
 	}
 
