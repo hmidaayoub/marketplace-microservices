@@ -73,7 +73,11 @@ try {
     request = await call('/api/requests', {
       method: 'POST',
       body: {
-        itemName: 'Espresso Machine',
+        // Unique per run, like the emails above. Only one OPEN request per item may
+        // exist and this script deliberately stops before any approval, so its own
+        // request stays OPEN - a fixed name would 409 on the second run and take
+        // scripts/smoke.sh down with it.
+        itemName: `Espresso Machine ${n}`,
         description: 'bar grade, for a small cafe',
         category: 'kitchen',
         quantity: 3,

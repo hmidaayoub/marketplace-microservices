@@ -84,7 +84,11 @@ api POST /api/customers '{"firstName":"Amine","lastName":"Hmida"}' "$C1"
 expect 201 "create customer profile"
 
 step "Spec flow 1 — create a request"
-api POST /api/requests '{"itemName":"Espresso Machine","description":"bar grade","category":"kitchen","quantity":3}' "$C1"
+# The item name carries $RUN for the same reason the emails do: only one OPEN request
+# per item may exist, so a fixed name is creatable exactly once - and then only again
+# once something moves that request out of OPEN. Leaving that to chance made this script
+# re-runnable only when the previous run got as far as an approval.
+api POST /api/requests "{\"itemName\":\"Espresso Machine $RUN\",\"description\":\"bar grade\",\"category\":\"kitchen\",\"quantity\":3}" "$C1"
 expect 201 "create request"
 REQ="$(field requestId)"
 [ -n "$REQ" ] && ok "requestId $REQ" || { bad "no requestId — cannot continue"; exit 1; }
@@ -155,7 +159,7 @@ api GET /api/notifications/me/unread-count "" "$S1"
 expect 200 "unread count"
 
 step "Closing a request fans out to every participant"
-api POST /api/requests '{"itemName":"Cafetiere","description":"to be closed","category":"kitchen","quantity":1}' "$C1"
+api POST /api/requests "{\"itemName\":\"Cafetiere $RUN\",\"description\":\"to be closed\",\"category\":\"kitchen\",\"quantity\":1}" "$C1"
 expect 201 "create a second request"
 CLOSE="$(field requestId)"
 api POST "/api/requests/$CLOSE/participants" '{"quantity":2}' "$C2"
