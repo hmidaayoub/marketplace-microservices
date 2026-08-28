@@ -211,6 +211,16 @@ const requestsSlice = createSlice({
       .addCase(leaveRequest.fulfilled, (state, action) => {
         state.mine = state.mine.filter((r) => r.requestId !== action.payload)
       })
+      // Joining puts the request among the caller's own. The matcher below keeps the
+      // copies already held in step but only maps over them, so without this a request
+      // joined from anywhere other than the My requests page stayed missing from it
+      // until the next fetch - and nothing on screen could tell it had been joined.
+      .addCase(joinRequest.fulfilled, (state, action) => {
+        const joined = action.payload
+        if (!state.mine.some((r) => r.requestId === joined.requestId)) {
+          state.mine.unshift(joined)
+        }
+      })
       // Join, update and close all return the request in its new state, so one handler
       // keeps every copy the app is holding in step.
       .addMatcher(

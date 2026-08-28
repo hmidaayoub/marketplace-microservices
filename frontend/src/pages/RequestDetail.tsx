@@ -19,7 +19,7 @@ import {
   TagIcon,
   UsersIcon,
 } from 'lucide-react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
@@ -50,11 +50,13 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
+import type { Customer } from '@/api/types'
 import { isFullOffer } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
 import { createOffer, fetchOffersForRequest } from '@/store/offersSlice'
 import {
   closeRequest,
+  fetchMyRequests,
   fetchRequest,
   joinRequest,
   leaveRequest,
@@ -70,6 +72,8 @@ export default function RequestDetail() {
   const offerError = useAppSelector((s) => s.offers.error)
   const user = useAppSelector((s) => s.auth.user)
   const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
+  const mine = useAppSelector((s) => s.requests.mine)
+  const profile = useAppSelector((s) => s.auth.profile)
 
   useEffect(() => {
     dispatch(fetchRequest(id))
@@ -77,7 +81,10 @@ export default function RequestDetail() {
     // depends on who is asking - a rival seller gets the sellerId withheld - so there is
     // no anonymous shape for it, and asking would only earn a 401.
     if (signedIn) dispatch(fetchOffersForRequest(id))
-  }, [dispatch, id, signedIn])
+    // Nothing on the request itself says whether the caller is on it - the response is
+    // the same for every reader - so participation is read from the caller's own list.
+    if (user?.role === 'CUSTOMER') dispatch(fetchMyRequests())
+  }, [dispatch, id, signedIn, user?.role])
 
   if (!request) {
     return (
@@ -89,8 +96,15 @@ export default function RequestDetail() {
     )
   }
 
-  const isOwner = request.createdBy === user?.userId
+  // createdBy is the customer who opened the request, not the account behind them -
+  // request-service stores the customerId it resolved the caller to. Comparing it to
+  // the userId matched nothing, so the owner was never offered Close request.
+  const customerId = user?.role === 'CUSTOMER' ? (profile as Customer | null)?.customerId : undefined
+  const isOwner = Boolean(customerId) && request.createdBy === customerId
   const isOpen = request.status === 'OPEN'
+  // The creator is added as a participant when the request is made, so an owner is
+  // always joined and never sees Join either.
+  const hasJoined = mine.some((r) => r.requestId === id)
 
   return (
     <div className="space-y-6">
@@ -119,7 +133,9 @@ export default function RequestDetail() {
 
       <ErrorAlert>{requestError || offerError}</ErrorAlert>
 
-      {user?.role === 'CUSTOMER' && isOpen && <Participation id={id} isOwner={isOwner} />}
+      {user?.role === 'CUSTOMER' && isOpen && (
+        <Participation id={id} isOwner={isOwner} hasJoined={hasJoined} />
+      )}
       {user?.role === 'SELLER' && isOpen && <OfferForm requestId={id} />}
       {!signedIn && isOpen && <SignInToTakePart />}
 
@@ -243,15 +259,32 @@ function Stat({
   )
 }
 
-function Participation({ id, isOwner }: { id: string; isOwner: boolean }) {
+function Participation({
+  id,
+  isOwner,
+  hasJoined,
+}: {
+  id: string
+  isOwner: boolean
+  hasJoined: boolean
+}) {
+  const navigate = useNavigate()
   const dispatch = useAppDispatch()
   const [quantity, setQuantity] = useState(1)
 
   // Every one of these thunks reports failure by rejecting into the slice's error, which
   // is already on screen - so the toast is only for the success the page cannot show.
-  const run = async (dispatched: Promise<{ type: string }>, message: string) => {
+  // after runs only on success, so a refused join leaves the caller on the request
+  // rather than sending them to a list they are not on.
+  const run = async (
+    dispatched: Promise<{ type: string }>,
+    message: string,
+    after?: () => void,
+  ) => {
     const result = await dispatched
-    if (!result.type.endsWith('/rejected')) toast.success(message)
+    if (result.type.endsWith('/rejected')) return
+    toast.success(message)
+    after?.()
   }
 
   return (
@@ -259,7 +292,10 @@ function Participation({ id, isOwner }: { id: string; isOwner: boolean }) {
       <CardHeader>
         <CardTitle>Your participation</CardTitle>
         <CardDescription>
-          Joining adds your quantity to the total. Closing notifies every participant.
+          {hasJoined
+            ? 'You are on this request. Change the quantity you asked for, or leave it.'
+            : 'Joining adds your quantity to the total.'}
+          {isOwner && ' Closing notifies every participant.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap items-end gap-3">
@@ -274,19 +310,43 @@ function Participation({ id, isOwner }: { id: string; isOwner: boolean }) {
           />
         </Field>
 
-        <Button onClick={() => run(dispatch(joinRequest({ id, quantity })), 'Joined this request')}>
-          Join
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => run(dispatch(updateQuantity({ id, quantity })), 'Quantity updated')}
-        >
-          Update my quantity
-        </Button>
-        <Button variant="ghost" onClick={() => run(dispatch(leaveRequest(id)), 'You left this request')}>
-          <LogOutIcon />
-          Leave
-        </Button>
+        {/* Joining is only on offer to someone who is not already on the request:
+            the API answers a second join with a 409, and an action whose only outcome
+            is that error is not one to put in front of them. */}
+        {hasJoined ? (
+          <>
+            <Button
+              variant="outline"
+              onClick={() => run(dispatch(updateQuantity({ id, quantity })), 'Quantity updated')}
+            >
+              Update my quantity
+            </Button>
+            {/* Leaving ends the same place joining does: the list of what you are on,
+                which this request has just dropped off. Staying here would leave the
+                caller looking at a request whose only remaining action is to rejoin. */}
+            <Button
+              variant="ghost"
+              onClick={() =>
+                run(dispatch(leaveRequest(id)), 'You left this request', () =>
+                  navigate('/my-requests'),
+                )
+              }
+            >
+              <LogOutIcon />
+              Leave
+            </Button>
+          </>
+        ) : (
+          <Button
+            onClick={() =>
+              run(dispatch(joinRequest({ id, quantity })), 'Joined this request', () =>
+                navigate('/my-requests'),
+              )
+            }
+          >
+            Join
+          </Button>
+        )}
 
         {isOwner && (
           <AlertDialog>
