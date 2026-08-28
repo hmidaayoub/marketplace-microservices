@@ -112,6 +112,67 @@ func TestSecondDecisionOnSameOfferIsRejected(t *testing.T) {
 	}
 }
 
+// A dangling request used to be reported as "Offer not found" - about the offer the
+// admin was looking straight at. The offer is fine; what it points at is not.
+func TestApprovingAnOfferWhoseRequestIsGoneSaysSo(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, requestID := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	// The request disappears out from under the offer.
+	h.p.mu.Lock()
+	delete(h.p.participant, requestID)
+	h.p.mu.Unlock()
+
+	res := h.approve(adminToken, offerID)
+	if res.code != http.StatusConflict {
+		t.Fatalf("approve with no request: status %d, want 409; body %s", res.code, res.raw)
+	}
+	if msg := str(t, res.body, "message"); !strings.Contains(msg, "no longer exists") {
+		t.Errorf("message = %q, want it to name the request, not the offer", msg)
+	}
+	if got := countRows(t, "offer_decision"); got != 0 {
+		t.Errorf("offer_decision rows = %d, want 0 - nothing was decided", got)
+	}
+	if got := countRows(t, "contact_access"); got != 0 {
+		t.Errorf("contact_access rows = %d, want 0", got)
+	}
+
+	// Still clearable: a rejection never needs the participants.
+	rej := h.do(http.MethodPost, "/api/admin/offers/"+offerID.String()+"/reject", adminToken, `{"reason":"request withdrawn"}`)
+	if rej.code != http.StatusCreated {
+		t.Fatalf("reject with no request: status %d, want 201; body %s", rej.code, rej.raw)
+	}
+}
+
+// Every participant can leave - the creator is added as one and has no exemption - and
+// approving what is left would grant nobody while telling the seller they were granted.
+func TestApprovingARequestWithNoBuyersLeftIsRefused(t *testing.T) {
+	h := newHarness(t)
+	_, adminToken := h.adminToken()
+	_, sellerID, _ := h.newSeller()
+	offerID, requestID := h.newOffer(sellerID, h.newCustomer("+21611111111"))
+
+	h.p.mu.Lock()
+	h.p.participant[requestID] = nil // the request stands; everyone has left it
+	h.p.mu.Unlock()
+
+	res := h.approve(adminToken, offerID)
+	if res.code != http.StatusConflict {
+		t.Fatalf("approve with no buyers: status %d, want 409; body %s", res.code, res.raw)
+	}
+	if msg := str(t, res.body, "message"); !strings.Contains(msg, "no buyers") {
+		t.Errorf("message = %q, want it to say the request has no buyers", msg)
+	}
+	if got := countRows(t, "offer_decision"); got != 0 {
+		t.Errorf("offer_decision rows = %d, want 0 - an approval granting nobody is not recorded", got)
+	}
+	if got := h.offerStatus(offerID); got != statusPending {
+		t.Errorf("offer status = %q, want it left PENDING", got)
+	}
+}
+
 func TestDecidingAnOfferThatIsNotPendingIsRejected(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
