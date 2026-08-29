@@ -608,6 +608,12 @@ export interface components {
             similarity?: number;
             status?: string;
             totalCustomers?: number;
+            /**
+             * @description How many live offers stand on this request. Counted by offer-service - PENDING or
+             *     APPROVED, since a cancelled or rejected one is a record rather than an offer - and
+             *     reported here because it is half of what the status means.
+             */
+            totalOffers?: number;
             totalQuantity?: number;
             updatedAt?: string;
         };

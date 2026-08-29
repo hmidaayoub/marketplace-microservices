@@ -22,8 +22,8 @@ seller service ever stores or returns one.
 | API Gateway | 8080 | — | Implemented (nginx) |
 | Swagger UI | 8080`/docs` | — | Aggregates all seven specs |
 
-352 tests pass in total: 87 across the four Maven modules, 115 across the two Go
-modules (76 request, 39 admin), and 150 across the two Python modules (84 offer,
+368 tests pass in total: 87 across the four Maven modules, 124 across the two Go
+modules (85 request, 39 admin), and 157 across the two Python modules (91 offer,
 66 notification).
 
 Every service in the spec is implemented, the notification events of section 18 flow
@@ -201,6 +201,7 @@ who want it. Endpoints follow spec section 10.
 | `GET` | `/internal/requests/{requestId}` | internal key |
 | `GET` | `/internal/requests/{requestId}/demand` | internal key |
 | `GET` | `/internal/requests/{requestId}/participants` | internal key |
+| `PUT` | `/internal/requests/{requestId}/offers/count` | internal key |
 
 Browsing needs no token at all. It is how a seller finds demand worth an offer, and how
 somebody without an account sees what the platform is before signing up for one. Nothing
@@ -274,9 +275,9 @@ Rules worth knowing:
 - **A customer joins a request at most once.** Enforced by a unique constraint rather
   than a read-then-write check, which two concurrent joins would both pass.
 - **Participation is never gated on status.** A request is `OPEN` while at least one
-  customer wants the item and `INACTIVE` once the last one leaves, and joining an
-  `INACTIVE` request makes it `OPEN` again. Neither state is terminal, so there is no
-  point at which a customer is locked out of demand they want to be part of.
+  customer wants the item *or* one seller is offering on it, and `INACTIVE` once neither
+  is true. Either a join or an offer makes it `OPEN` again. Neither state is terminal, so
+  there is no point at which a customer is locked out of demand they want to be part of.
 - **Identity is never accepted from the caller.** The token's `sub` is resolved to a
   `customerId` through customer-service's internal API; a body carrying `customerId` is
   rejected, not ignored.
@@ -295,14 +296,28 @@ Rules worth knowing:
   owner and writes no event — and it takes the same name lock as a create, so a customer
   naming that item at the same instant cannot open a second request for it.
 - **The status is derived, not commanded.** `RecalculateDemand` writes it in the same
-  statement and the same transaction as `total_customers` and `total_quantity`, from
-  the participant rows those totals are counted from — so it cannot disagree with them.
+  statement and the same transaction as `total_customers` and `total_quantity`, from the
+  participant rows those totals are counted from — so it cannot disagree with them.
   Nothing sets a status: there is no close endpoint and no internal status API, and
   `OFFER_APPROVED`, `CLOSED`, `OFFER_PENDING` and `CANCELLED` no longer exist.
+- **`total_offers` is the one number this service does not compute.** Offers live in
+  offer-service's database and nothing here may read it, so offer-service pushes the
+  count of live offers — `PENDING` or `APPROVED` — to
+  `PUT /internal/requests/{id}/offers/count` whenever it changes. What the count *means*
+  is still decided here, in the one statement that decides statuses: `SetOfferCount`
+  writes the column and leaves `RecalculateDemand` to derive the rest, so there is still
+  only one place a status is chosen. The body carries an absolute count rather than a
+  delta, which is what makes the call safe to retry — a report that arrives twice lands
+  on the same answer, and a report that never arrives is repaired by the next one on that
+  request rather than needing to be remembered.
 - **A request never ends.** Demand does not stop being demand because one deal was
   struck against it, and it is not the platform's to withdraw on a customer's behalf.
-  An emptied request is `INACTIVE`, which describes who is on it rather than what may
-  still happen to it, and a single join revives it.
+  A request nobody is on and nobody is selling into is `INACTIVE`, which describes who is
+  behind it rather than what may still happen to it, and a single join or offer revives
+  it. The last buyer to leave cannot mark a request dormant out from under a seller whose
+  offer is still standing on it — that offer is under review, or approved with contact
+  details already released against it, and calling the request inactive while that is
+  true would say something false about it.
 
 ## Offer Service
 
@@ -338,6 +353,13 @@ Rules worth knowing:
   opening a rival one — so the offer is never left bidding against nobody while the
   demand pools somewhere else. An item that already has a request creates nothing: the
   offer lands on the demand already there, however the seller spelled the name.
+- **Offers are reported to request-service, because they are half of what a request's
+  status means.** After every change to the live set — an offer made, withdrawn, or
+  decided by an admin — this service counts the `PENDING` and `APPROVED` offers on that
+  request and pushes the total. Best-effort, like resolving the admins to notify: the
+  offer is already stored, and failing to describe it must not undo it. A lost report
+  costs that request the right status until the next offer on it changes, at which point
+  the whole count is sent again and the drift is gone.
 - **A seller answers a request once.** Bidding twice against the same demand is one
   proposal changed, not two, so a second submission is refused with `409` and the first
   offer attached as `existing` — update that one with `PUT /api/offers/{offerId}`, which

@@ -119,9 +119,13 @@ export default function RequestDetail() {
         <StatusBadge status={request.status ?? 'OPEN'} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat icon={<UsersIcon />} label="Buyers" value={request.totalCustomers} />
         <Stat icon={<PackageIcon />} label="Units wanted" value={request.totalQuantity} />
+        {/* Live offers - pending or approved. A cancelled or rejected one is a record of
+            an offer rather than one, so it neither counts here nor holds the request
+            open, which is why this can read lower than the list further down. */}
+        <Stat icon={<HandshakeIcon />} label="Offers" value={request.totalOffers ?? 0} />
         <Stat icon={<TagIcon />} label="Category" value={request.category} />
       </div>
 

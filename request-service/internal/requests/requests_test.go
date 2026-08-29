@@ -1177,6 +1177,185 @@ func TestSimilarRequests_suggestsARequestWithNoBuyersOnIt(t *testing.T) {
 	}
 }
 
+// --- offers keep a request open ------------------------------------------------------
+//
+// A request nobody is on but somebody is selling into is not dormant. The count comes
+// from offer-service, because the offers are its data; what the count means is decided
+// here.
+
+// setOfferCount is offer-service reporting what stands on a request.
+func (h *harness) setOfferCount(requestID string, count int) response {
+	h.t.Helper()
+	return h.doInternalWithBody(http.MethodPut,
+		"/internal/requests/"+requestID+"/offers/count", testInternalAPIKey,
+		fmt.Sprintf(`{"totalOffers":%d}`, count))
+}
+
+func TestOfferCount_keepsARequestOpenWhenTheLastBuyerLeaves(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	if res := h.setOfferCount(requestID, 1); res.code != http.StatusOK {
+		t.Fatalf("reporting the count: status %d body %s", res.code, res.raw)
+	}
+
+	res := h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, "")
+	if res.code != http.StatusNoContent {
+		t.Fatalf("leaving: status %d body %s", res.code, res.raw)
+	}
+
+	after := h.do(http.MethodGet, "/api/requests/"+requestID, "", "")
+	if got := after.body["status"]; got != "OPEN" {
+		t.Errorf("status = %v, want OPEN - an offer still stands on it", got)
+	}
+	if got := num(t, after.body, "totalCustomers"); got != 0 {
+		t.Errorf("totalCustomers = %d, want 0", got)
+	}
+}
+
+// Both counts have to be zero. One of them is not enough.
+func TestOfferCount_aRequestWithNeitherBuyersNorOffersIsInactive(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	h.setOfferCount(requestID, 1)
+	h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, "")
+
+	// The seller withdraws, and now nothing is holding it open.
+	res := h.setOfferCount(requestID, 0)
+
+	if res.code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", res.code, res.raw)
+	}
+	if got := res.body["status"]; got != "INACTIVE" {
+		t.Errorf("status = %v, want INACTIVE - nobody wants it and nobody is selling it", got)
+	}
+}
+
+// The request a seller opened by offering against an item: no buyers from the start, and
+// its own offer is what keeps it from reading as dormant.
+func TestOfferCount_opensTheRequestASellerCreatedForTheirOwnOffer(t *testing.T) {
+	h := newHarness(t)
+
+	opened := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Drone"}`)
+	requestID := opened.body["requestId"].(string)
+	if got := opened.body["status"]; got != "INACTIVE" {
+		t.Fatalf("status = %v, want INACTIVE before any offer is reported", got)
+	}
+
+	res := h.setOfferCount(requestID, 1)
+
+	if got := res.body["status"]; got != "OPEN" {
+		t.Errorf("status = %v, want OPEN - a seller is offering on it", got)
+	}
+	if got := num(t, res.body, "totalOffers"); got != 1 {
+		t.Errorf("totalOffers = %d, want 1", got)
+	}
+}
+
+// The count travels with the request everywhere it is read, because it is half of what
+// the status means and somebody browsing demand should see what they are up against.
+func TestOfferCount_isCarriedByEveryProjectionOfARequest(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	h.setOfferCount(requestID, 2)
+
+	one := h.do(http.MethodGet, "/api/requests/"+requestID, "", "")
+	if got := num(t, one.body, "totalOffers"); got != 2 {
+		t.Errorf("reading one request: totalOffers = %d, want 2", got)
+	}
+
+	list := h.do(http.MethodGet, "/api/requests", "", "")
+	if got := num(t, list.list[0], "totalOffers"); got != 2 {
+		t.Errorf("browsing: totalOffers = %d, want 2", got)
+	}
+
+	mine := h.do(http.MethodGet, "/api/requests/me", owner, "")
+	if got := num(t, mine.list[0], "totalOffers"); got != 2 {
+		t.Errorf("my requests: totalOffers = %d, want 2", got)
+	}
+}
+
+// A participant change must not disturb it. RecalculateDemand reads the column rather
+// than recomputing it, because it cannot see the offers behind it.
+func TestOfferCount_survivesAJoin(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, joiner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+	h.setOfferCount(requestID, 3)
+
+	res := h.do(http.MethodPost, "/api/requests/"+requestID+"/participants", joiner, `{"quantity":2}`)
+
+	if got := num(t, res.body, "totalOffers"); got != 3 {
+		t.Errorf("totalOffers = %d, want it left at 3 by a join", got)
+	}
+}
+
+// A count, not a delta - which is what makes the call safe for offer-service to retry.
+func TestOfferCount_isIdempotent(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	h.setOfferCount(requestID, 2)
+	res := h.setOfferCount(requestID, 2)
+
+	if got := num(t, res.body, "totalOffers"); got != 2 {
+		t.Errorf("totalOffers = %d, want 2 - a repeated report is not a second offer", got)
+	}
+}
+
+func TestOfferCount_rejectsANonsenseCount(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	for _, body := range []string{`{}`, `{"totalOffers":-1}`, `{"totalOffers":"two"}`} {
+		res := h.doInternalWithBody(http.MethodPut,
+			"/internal/requests/"+requestID+"/offers/count", testInternalAPIKey, body)
+		if res.code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body %s", body, res.code, res.raw)
+		}
+	}
+}
+
+func TestOfferCount_returns404ForAnUnknownRequest(t *testing.T) {
+	h := newHarness(t)
+	if res := h.setOfferCount(uuid.NewString(), 1); res.code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", res.code)
+	}
+}
+
+// Nobody outside the platform may assert what offers exist: the only honest source is
+// the service that owns them.
+func TestOfferCount_isNotReachableWithoutTheInternalKey(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	requestID := h.createRequest(owner, "Espresso Machine", 3)
+
+	for name, res := range map[string]response{
+		"no key": h.doInternalWithBody(http.MethodPut,
+			"/internal/requests/"+requestID+"/offers/count", "", `{"totalOffers":9}`),
+		"user jwt": h.do(http.MethodPut,
+			"/internal/requests/"+requestID+"/offers/count", owner, `{"totalOffers":9}`),
+	} {
+		if res.code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401; body %s", name, res.code, res.raw)
+		}
+	}
+
+	after := h.do(http.MethodGet, "/api/requests/"+requestID, "", "")
+	if got := num(t, after.body, "totalOffers"); got != 0 {
+		t.Errorf("totalOffers = %d, want 0 - nothing should have been recorded", got)
+	}
+}
+
 // --- health -----------------------------------------------------------------------
 
 func TestHealth_isReachableWithoutCredentials(t *testing.T) {

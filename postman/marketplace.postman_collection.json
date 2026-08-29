@@ -1305,7 +1305,7 @@
             "method": "GET",
             "header": [],
             "url": "{{gatewayUrl}}/api/requests/{{sellerOpenedRequestId}}",
-            "description": "INACTIVE with nobody on it, which is what a request with no participants is - the same state one reaches when its last buyer leaves. A join revives it."
+            "description": "Nobody is on it, which is what totalCustomers says. Its status is OPEN rather than INACTIVE because the offer that opened it is standing on it - dormant means no buyers AND no offers."
           },
           "event": [
             {
@@ -1316,7 +1316,8 @@
                   "pm.test(\"ok\", () => pm.response.to.have.status(200));",
                   "const b = pm.response.json();",
                   "pm.test(\"nobody is on it\", () => pm.expect(b.totalCustomers).to.eql(0));",
-                  "pm.test(\"so it reads INACTIVE\", () => pm.expect(b.status).to.eql(\"INACTIVE\"));",
+                  "pm.test(\"but its own offer stands on it\", () => pm.expect(b.totalOffers).to.eql(1));",
+                  "pm.test(\"so it is not dormant\", () => pm.expect(b.status).to.eql(\"OPEN\"));",
                   "pm.test(\"and it has no owner - no buyer asked for it\", () =>",
                   "    pm.expect(b.createdBy).to.be.undefined);"
                 ]
@@ -1355,6 +1356,30 @@
                   "pm.test(\"on the request that already existed, however the name was typed\", () =>",
                   "    pm.expect(pm.response.json().requestId).to.eql(",
                   "        pm.collectionVariables.get(\"sellerOpenedRequestId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The offer keeps its request open with no buyers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/api/requests/{{sellerOpenedRequestId}}",
+            "description": "A request nobody is on but somebody is selling into is not dormant. The count comes from offer-service - the offers are its data - and request-service derives the status from it alongside the participant count."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"still nobody on it\", () => pm.expect(b.totalCustomers).to.eql(0));",
+                  "pm.test(\"but two offers stand on it\", () => pm.expect(b.totalOffers).to.eql(2));",
+                  "pm.test(\"so it is not dormant\", () => pm.expect(b.status).to.eql(\"OPEN\"));"
                 ]
               }
             }

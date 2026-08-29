@@ -114,6 +114,115 @@ async def test_submit_offer_allowed_while_other_offers_pending(
     assert response.status_code == 201
 
 
+# --- telling request-service what stands on a request -------------------------------
+#
+# A request with no buyers but a standing offer is not dormant. request-service decides
+# that, but it cannot count offers it cannot see, so this service reports them.
+
+
+async def test_making_an_offer_reports_the_live_count(client: AsyncClient, upstream: FakeUpstream):
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+
+    assert upstream.offer_counts[request_id] == 1
+
+
+async def test_a_rival_offer_adds_to_the_count(client: AsyncClient, upstream: FakeUpstream):
+    _, _, first = await _seller(client, upstream)
+    _, _, second = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    await client.post("/api/offers", json=_body(request_id), headers=auth(first))
+    await client.post("/api/offers", json=_body(request_id), headers=auth(second))
+
+    assert upstream.offer_counts[request_id] == 2
+
+
+async def test_withdrawing_an_offer_reports_the_count_it_leaves(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Withdrawing the last live offer is what can let a request with no buyers go
+    dormant, so the count that follows it matters as much as the one that preceded it."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    await client.delete(f"/api/offers/{created.json()['offerId']}", headers=auth(token))
+
+    assert upstream.offer_counts[request_id] == 0
+
+
+async def test_a_rejection_takes_the_offer_out_of_the_count(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    await client.patch(
+        f"/internal/offers/{created.json()['offerId']}/status",
+        json={"status": "REJECTED"},
+        headers=internal_headers(),
+    )
+
+    assert upstream.offer_counts[request_id] == 0
+
+
+async def test_an_approval_leaves_the_offer_in_the_count(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """An approved offer still stands - contact details were released against it - so it
+    still holds the request open."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    await client.patch(
+        f"/internal/offers/{created.json()['offerId']}/status",
+        json={"status": "APPROVED"},
+        headers=internal_headers(),
+    )
+
+    assert upstream.offer_counts[request_id] == 1
+
+
+async def test_the_count_is_absolute_not_a_delta(client: AsyncClient, upstream: FakeUpstream):
+    """Which is what makes the call safe to retry: every report carries the whole answer,
+    so one that arrives twice cannot count an offer twice."""
+    _, _, first = await _seller(client, upstream)
+    _, _, second = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    await client.post("/api/offers", json=_body(request_id), headers=auth(first))
+    await client.post("/api/offers", json=_body(request_id), headers=auth(second))
+
+    assert [count for _, count in upstream.reported_counts] == [1, 2]
+
+
+async def test_an_offer_survives_a_request_service_that_cannot_be_told_about_it(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Reporting the count describes the offer; it does not make it. Failing to describe
+    one must not undo it - the next report on that request carries the whole count and
+    the drift is gone."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+    upstream.count_reports_fail = True
+
+    response = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+
+    assert response.status_code == 201, response.text
+    assert upstream.offer_counts == {}
+
+    # And the next change on that request repairs it, without anything having to remember
+    # that a report was missed.
+    upstream.count_reports_fail = False
+    await client.delete(f"/api/offers/{response.json()['offerId']}", headers=auth(token))
+    assert upstream.offer_counts[request_id] == 0
+
+
 # --- one live offer per seller per request ------------------------------------------
 #
 # Answering the same demand twice is one proposal changed, not two. The second submission

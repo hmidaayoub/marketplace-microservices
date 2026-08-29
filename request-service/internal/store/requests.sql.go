@@ -40,7 +40,7 @@ func (q *Queries) AddParticipant(ctx context.Context, arg AddParticipantParams) 
 const createRequest = `-- name: CreateRequest :one
 INSERT INTO purchase_request (item_name, description, category, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by
+RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers
 `
 
 type CreateRequestParams struct {
@@ -69,6 +69,7 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CreatedBy,
+		&i.TotalOffers,
 	)
 	return i, err
 }
@@ -92,7 +93,7 @@ func (q *Queries) DeleteParticipant(ctx context.Context, arg DeleteParticipantPa
 }
 
 const findRequestByItemName = `-- name: FindRequestByItemName :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
 WHERE request_item_key(item_name) = request_item_key($1::text)
 ORDER BY (status = 'OPEN') DESC, created_at, request_id
 LIMIT 1
@@ -127,12 +128,13 @@ func (q *Queries) FindRequestByItemName(ctx context.Context, itemName string) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CreatedBy,
+		&i.TotalOffers,
 	)
 	return i, err
 }
 
 const findSimilarRequests = `-- name: FindSimilarRequests :many
-SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by,
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers,
        similarity(request_item_key(pr.item_name), request_item_key($1::text)) AS score,
        -- The same name, not merely a close one. Carried so a caller can tell the two
        -- refusals apart: a near-match may be overridden, an exact one may not.
@@ -220,6 +222,7 @@ func (q *Queries) FindSimilarRequests(ctx context.Context, arg FindSimilarReques
 			&i.PurchaseRequest.CreatedAt,
 			&i.PurchaseRequest.UpdatedAt,
 			&i.PurchaseRequest.CreatedBy,
+			&i.PurchaseRequest.TotalOffers,
 			&i.Score,
 			&i.Exact,
 			&i.Contains,
@@ -258,7 +261,7 @@ func (q *Queries) GetParticipant(ctx context.Context, arg GetParticipantParams) 
 }
 
 const getRequest = `-- name: GetRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
 WHERE request_id = $1
 `
 
@@ -276,6 +279,7 @@ func (q *Queries) GetRequest(ctx context.Context, requestID uuid.UUID) (Purchase
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CreatedBy,
+		&i.TotalOffers,
 	)
 	return i, err
 }
@@ -307,7 +311,7 @@ func (q *Queries) ListParticipantCustomerIDs(ctx context.Context, requestID uuid
 }
 
 const listRequests = `-- name: ListRequests :many
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
 WHERE ($1::text IS NULL
        OR item_name ILIKE '%' || $1::text || '%')
   AND ($2::text IS NULL
@@ -352,6 +356,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CreatedBy,
+			&i.TotalOffers,
 		); err != nil {
 			return nil, err
 		}
@@ -364,7 +369,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 }
 
 const listRequestsByCustomer = `-- name: ListRequestsByCustomer :many
-SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by FROM purchase_request pr
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers FROM purchase_request pr
 JOIN request_participant rp ON rp.request_id = pr.request_id
 WHERE rp.customer_id = $1
 ORDER BY rp.joined_at DESC
@@ -390,6 +395,7 @@ func (q *Queries) ListRequestsByCustomer(ctx context.Context, customerID uuid.UU
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CreatedBy,
+			&i.TotalOffers,
 		); err != nil {
 			return nil, err
 		}
@@ -415,7 +421,7 @@ func (q *Queries) LockItemName(ctx context.Context, itemName string) error {
 }
 
 const lockRequest = `-- name: LockRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
 WHERE request_id = $1
 FOR UPDATE
 `
@@ -436,6 +442,7 @@ func (q *Queries) LockRequest(ctx context.Context, requestID uuid.UUID) (Purchas
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CreatedBy,
+		&i.TotalOffers,
 	)
 	return i, err
 }
@@ -444,7 +451,10 @@ const recalculateDemand = `-- name: RecalculateDemand :one
 UPDATE purchase_request pr
 SET total_customers = d.total_customers,
     total_quantity  = d.total_quantity,
-    status          = CASE WHEN d.total_customers = 0 THEN 'INACTIVE' ELSE 'OPEN' END,
+    status          = CASE
+                          WHEN d.total_customers = 0 AND pr.total_offers = 0 THEN 'INACTIVE'
+                          ELSE 'OPEN'
+                      END,
     updated_at      = now()
 FROM (
     SELECT COUNT(*)::int                       AS total_customers,
@@ -453,16 +463,21 @@ FROM (
     WHERE request_id = $1
 ) d
 WHERE pr.request_id = $1
-RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by
+RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers
 `
 
 // R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
 // from request_participant in the same transaction as the mutation that changed it.
 //
 // The status is recomputed with them, because it is the same fact: a request nobody is
-// on is INACTIVE, and the join that puts someone back on it makes it OPEN again. That
-// makes the status derived rather than commanded - there is no call that sets it, so
-// it can never disagree with the participants it describes.
+// on and nobody is selling into is INACTIVE, and either a join or an offer makes it OPEN
+// again. That makes the status derived rather than commanded - there is no call that
+// sets it, so it can never disagree with the counts it describes.
+//
+// This is the only statement that decides a status, which is why SetOfferCount writes
+// its column and then leaves the deciding to this: two places computing it would be two
+// places to disagree. total_offers is read rather than recomputed, because the offers it
+// counts live in another service's database.
 func (q *Queries) RecalculateDemand(ctx context.Context, requestID uuid.UUID) (PurchaseRequest, error) {
 	row := q.db.QueryRow(ctx, recalculateDemand, requestID)
 	var i PurchaseRequest
@@ -477,8 +492,31 @@ func (q *Queries) RecalculateDemand(ctx context.Context, requestID uuid.UUID) (P
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CreatedBy,
+		&i.TotalOffers,
 	)
 	return i, err
+}
+
+const setOfferCount = `-- name: SetOfferCount :exec
+UPDATE purchase_request
+SET total_offers = $1
+WHERE request_id = $2
+`
+
+type SetOfferCountParams struct {
+	TotalOffers int32
+	RequestID   uuid.UUID
+}
+
+// How many live offers stand on this request, as offer-service counts them. An absolute
+// number rather than a delta, so a call that is retried or arrives twice lands on the
+// same answer instead of drifting away from the truth.
+//
+// It writes the column and nothing else. The status that depends on it is left to
+// RecalculateDemand, which the service calls next in the same transaction.
+func (q *Queries) SetOfferCount(ctx context.Context, arg SetOfferCountParams) error {
+	_, err := q.db.Exec(ctx, setOfferCount, arg.TotalOffers, arg.RequestID)
+	return err
 }
 
 const updateParticipantQuantity = `-- name: UpdateParticipantQuantity :one

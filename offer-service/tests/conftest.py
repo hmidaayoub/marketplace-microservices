@@ -83,7 +83,18 @@ class FakeUpstream:
         self.opened_items: list[dict] = []
 
         # Flipped by the tests that assert what an unreachable request-service costs.
+        # Deliberately separate from count_reports_fail: an outage that stops a request
+        # being looked up stops the offer outright, while one that only loses the count
+        # report leaves the offer standing and the count to be repaired later. Those are
+        # different behaviours, so they need different switches to pin them down.
         self.request_service_down = False
+        self.count_reports_fail = False
+
+        # The live-offer counts this service has reported, newest last per request. The
+        # status of a request depends on them, and request-service cannot count offers
+        # it cannot see - so what gets pushed is behaviour worth pinning down.
+        self.offer_counts: dict[uuid.UUID, int] = {}
+        self.reported_counts: list[tuple[uuid.UUID, int]] = []
 
     def add_admin(self, user_id: uuid.UUID) -> None:
         self.admins.append(user_id)
@@ -137,6 +148,15 @@ class FakeUpstream:
             return httpx.Response(
                 201, json=self._request_body(opened, total_customers=0, total_quantity=0)
             )
+
+        if path.endswith("/offers/count") and request.method == "PUT":
+            if self.count_reports_fail:
+                return httpx.Response(500, json={"message": "boom", "status": 500})
+            request_id = uuid.UUID(path.split("/")[3])
+            count = json.loads(request.content)["totalOffers"]
+            self.offer_counts[request_id] = count
+            self.reported_counts.append((request_id, count))
+            return httpx.Response(200, json=self._request_body(request_id))
 
         if path.startswith("/internal/requests/"):
             raw = path.rsplit("/", 1)[-1]

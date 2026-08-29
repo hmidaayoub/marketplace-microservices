@@ -121,7 +121,7 @@ export default function BrowseRequests() {
             <SelectContent>
               <SelectItem value={ANY}>Any status</SelectItem>
               <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="INACTIVE">No buyers</SelectItem>
+              <SelectItem value="INACTIVE">Dormant — no buyers, no offers</SelectItem>
             </SelectContent>
           </Select>
 
@@ -207,6 +207,18 @@ function RequestCard({ request }: { request: PurchaseRequest }) {
             </p>
             <p className="font-heading text-lg font-semibold tabular-nums">
               {request.totalQuantity}
+            </p>
+          </div>
+          {/* The other half of what the status means: a request with no buyers but an
+              offer standing on it is not dormant. It also tells a seller what they are
+              bidding against before they open the request. */}
+          <div>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <HandshakeIcon className="size-3.5" />
+              Offers
+            </p>
+            <p className="font-heading text-lg font-semibold tabular-nums">
+              {request.totalOffers ?? 0}
             </p>
           </div>
         </CardContent>

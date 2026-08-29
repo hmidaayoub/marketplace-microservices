@@ -409,6 +409,39 @@ func (h *Handler) InternalEnsure(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, status, toResponse(request))
 }
 
+// InternalSetOfferCount handles PUT /internal/requests/{requestId}/offers/count.
+//
+// offer-service pushes the number of live offers standing on a request whenever it
+// changes, and the status is recomputed from it: a request nobody is on but somebody is
+// selling into is not dormant. Internal because it is not a caller's fact to assert -
+// the only honest source is the service that owns the offers.
+//
+// Idempotent by design. The body carries a count rather than a delta, so a retry after a
+// timeout writes the same number instead of counting an offer twice.
+func (h *Handler) InternalSetOfferCount(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := pathUUID(w, r, "requestId")
+	if !ok {
+		return
+	}
+
+	var body offerCountBody
+	if !httpx.DecodeJSON(w, r, &body) {
+		return
+	}
+	if msg := body.validate(); msg != "" {
+		httpx.Error(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	updated, err := h.service.SetOfferCount(r.Context(), requestID, *body.TotalOffers)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toResponse(updated))
+}
+
 // InternalGet handles GET /internal/requests/{requestId}, used by other services to
 // validate that a request exists before acting on it.
 func (h *Handler) InternalGet(w http.ResponseWriter, r *http.Request) {
