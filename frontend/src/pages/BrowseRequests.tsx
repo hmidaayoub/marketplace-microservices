@@ -93,8 +93,8 @@ export default function BrowseRequests() {
       </PageHeader>
 
       <Card size="sm">
-        <CardContent className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-48 flex-1">
+        <CardContent>
+          <div className="relative">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
@@ -104,11 +104,6 @@ export default function BrowseRequests() {
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-
-          {/* The results speak for themselves; a tally of them said nothing the grid
-              below does not. The spinner stays, because a search that already has
-              results on screen shows no skeleton and would otherwise look inert. */}
-          {loading && <Spinner className="size-4 text-muted-foreground" />}
         </CardContent>
       </Card>
 
