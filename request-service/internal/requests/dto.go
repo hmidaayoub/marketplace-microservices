@@ -37,6 +37,13 @@ type statusBody struct {
 	Status string `json:"status"`
 }
 
+// offerCountBody is what offer-service pushes when the live offers on a request change.
+// A count and not a delta: a call that is retried or arrives twice has to land on the
+// same answer rather than drift.
+type offerCountBody struct {
+	TotalOffers *int32 `json:"totalOffers"`
+}
+
 // requestResponse is the shape returned to end users and to internal callers alike.
 // It carries no customerId: participant identity is only ever exposed through
 // /internal/requests/{id}/participants, so a seller browsing demand cannot enumerate
@@ -48,14 +55,19 @@ type requestResponse struct {
 	// a seller offering against an item has no buyer behind it.
 	CreatedBy *uuid.UUID `json:"createdBy,omitempty"`
 
-	ItemName       string    `json:"itemName"`
-	Description    string    `json:"description"`
-	Category       string    `json:"category"`
-	Status         string    `json:"status"`
-	TotalCustomers int32     `json:"totalCustomers"`
-	TotalQuantity  int64     `json:"totalQuantity"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ItemName       string `json:"itemName"`
+	Description    string `json:"description"`
+	Category       string `json:"category"`
+	Status         string `json:"status"`
+	TotalCustomers int32  `json:"totalCustomers"`
+	TotalQuantity  int64  `json:"totalQuantity"`
+
+	// How many live offers stand on this request. Counted by offer-service - PENDING or
+	// APPROVED, since a cancelled or rejected one is a record rather than an offer - and
+	// reported here because it is half of what the status means.
+	TotalOffers int32     `json:"totalOffers"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 
 	// How close this request's item name is to the one that was searched for, 0 to 1.
 	// Carried only by the near-match endpoints, so the caller can order and explain the
@@ -98,6 +110,7 @@ func toResponse(r store.PurchaseRequest) requestResponse {
 		Status:         r.Status,
 		TotalCustomers: r.TotalCustomers,
 		TotalQuantity:  r.TotalQuantity,
+		TotalOffers:    r.TotalOffers,
 		CreatedAt:      r.CreatedAt,
 		UpdatedAt:      r.UpdatedAt,
 	}
@@ -169,6 +182,18 @@ func (b *ensureRequestBody) validate() string {
 		return "itemName is required"
 	case len(b.ItemName) > 200:
 		return "itemName must be at most 200 characters"
+	}
+	return ""
+}
+
+// validate takes a pointer for totalOffers so a body that omits it is told so, rather
+// than being read as zero and quietly emptying a request of its offers.
+func (b offerCountBody) validate() string {
+	switch {
+	case b.TotalOffers == nil:
+		return "totalOffers is required"
+	case *b.TotalOffers < 0:
+		return "totalOffers cannot be negative"
 	}
 	return ""
 }

@@ -4,7 +4,7 @@ public gateway (spec section 6)."""
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import service
@@ -51,7 +51,7 @@ async def read_offer(offer_id: uuid.UUID, session: SessionDep) -> dict[str, Any]
 
 @router.patch("/{offer_id}/status", response_model=None)
 async def set_status(
-    offer_id: uuid.UUID, payload: StatusUpdate, session: SessionDep
+    offer_id: uuid.UUID, payload: StatusUpdate, session: SessionDep, request: Request
 ) -> dict[str, Any]:
     """Records the outcome of an admin decision.
 
@@ -60,4 +60,12 @@ async def set_status(
     holds the resulting status, and only accepts APPROVED or REJECTED on a PENDING offer.
     """
     offer = await service.set_status(session, offer_id, payload.status)
+
+    # A rejection takes the offer out of the live set, which can be what lets a request
+    # with no buyers go dormant. An approval leaves the count where it was, but it is
+    # reported all the same: the call carries the whole count, so sending it when nothing
+    # changed costs a round trip and removes a case to reason about.
+    await request.app.state.clients.report_offer_count(
+        offer.request_id, await service.count_live_offers(session, offer.request_id)
+    )
     return OfferOut.of(offer).model_dump(by_alias=True, mode="json")

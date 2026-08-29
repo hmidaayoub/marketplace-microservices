@@ -47,9 +47,13 @@ var (
 
 // A request describes demand, and demand does not end - it only stops having anyone
 // behind it. So there are two statuses and neither is terminal: OPEN while at least one
-// customer wants the item, INACTIVE once the last one leaves, and a join makes it OPEN
-// again. Both are written by RecalculateDemand from the participant count, which is why
-// nothing here sets a status and no API accepts one.
+// customer wants the item or one seller is offering on it, INACTIVE once neither is true,
+// and a join or an offer makes it OPEN again. Both are written by RecalculateDemand from
+// those two counts, which is why nothing here sets a status and no API accepts one.
+//
+// The offer count is the one number this service does not compute. It arrives from
+// offer-service through SetOfferCount, because offers are its data - but what the count
+// means for the status is decided here, in the one statement that decides statuses.
 const (
 	StatusOpen     = "OPEN"
 	StatusInactive = "INACTIVE"
@@ -267,6 +271,49 @@ func (s *Service) EnsureForItem(
 	})
 
 	return request, created, err
+}
+
+// SetOfferCount records how many live offers stand on a request and recomputes the
+// status that depends on it.
+//
+// The count comes from offer-service because offers are its data and nothing here may
+// read another service's database. What this owns is the consequence: a request nobody
+// is on but somebody is selling into is not dormant, so the last buyer to leave can no
+// longer mark it so out from under a standing offer.
+//
+// The lock is the same one joins and leaves take. Without it a leave and an offer
+// arriving together would each recompute the status from a snapshot missing the other's
+// write, and whichever committed last would win with a stale answer.
+func (s *Service) SetOfferCount(
+	ctx context.Context, requestID uuid.UUID, totalOffers int32,
+) (store.PurchaseRequest, error) {
+	var updated store.PurchaseRequest
+
+	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
+		if _, err := q.LockRequest(ctx, requestID); errors.Is(err, pgx.ErrNoRows) {
+			return ErrRequestNotFound
+		} else if err != nil {
+			return fmt.Errorf("locking request: %w", err)
+		}
+
+		if err := q.SetOfferCount(ctx, store.SetOfferCountParams{
+			RequestID:   requestID,
+			TotalOffers: totalOffers,
+		}); err != nil {
+			return fmt.Errorf("recording the offer count: %w", err)
+		}
+
+		// Deliberately not folded into the statement above: one query decides a status,
+		// and this is it.
+		var err error
+		updated, err = q.RecalculateDemand(ctx, requestID)
+		if err != nil {
+			return fmt.Errorf("recalculating demand: %w", err)
+		}
+		return nil
+	})
+
+	return updated, err
 }
 
 // refuseExisting turns a name collision into the right refusal. A caller who is already

@@ -86,6 +86,10 @@
                     "totalCustomers": {
                         "type": "integer"
                     },
+                    "totalOffers": {
+                        "description": "How many live offers stand on this request. Counted by offer-service - PENDING or\nAPPROVED, since a cancelled or rejected one is a record rather than an offer - and\nreported here because it is half of what the status means.",
+                        "type": "integer"
+                    },
                     "totalQuantity": {
                         "type": "integer"
                     },

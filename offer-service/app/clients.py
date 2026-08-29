@@ -128,6 +128,26 @@ class ServiceClients:
 
         return _to_request(response.json())
 
+    async def report_offer_count(self, request_id: uuid.UUID, total_offers: int) -> None:
+        """Tell request-service how many live offers stand on a request.
+
+        It is half of what a request's status means: one with no buyers but a standing
+        offer is not dormant, and request-service cannot work that out for itself because
+        the offers are this service's data.
+
+        Best-effort, like admin_user_ids and for the same reason - the offer is already
+        stored, and failing to describe it must not undo it. A failure costs a request
+        the right status until the next offer on it is made, cancelled or decided, at
+        which point this is called again with the whole count and the drift is gone. The
+        count is absolute rather than a delta precisely so that recovery is automatic.
+        """
+        url = f"{self._request_base_url}/internal/requests/{request_id}/offers/count"
+        try:
+            response = await self._client.put(url, json={"totalOffers": total_offers})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            log.error("cannot report the offer count for request %s: %s", request_id, exc)
+
     async def get_request(self, request_id: uuid.UUID) -> PurchaseRequest:
         url = f"{self._request_base_url}/internal/requests/{request_id}"
         try:

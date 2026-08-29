@@ -71,6 +71,12 @@ async def submit_offer(
 
     offer = await service.create_offer(session, seller_id, request_id, payload, admin_ids)
 
+    # The request's status depends on this: one with no buyers but a standing offer is
+    # not dormant, and request-service cannot count offers it cannot see.
+    await clients.report_offer_count(
+        request_id, await service.count_live_offers(session, request_id)
+    )
+
     # The event is already durable; this only saves it waiting for the next poll.
     request.app.state.relay.wake()
 
@@ -145,8 +151,14 @@ async def update_offer(
 async def cancel_offer(
     offer_id: uuid.UUID, principal: SellerOnly, session: SessionDep, request: Request
 ) -> Response:
-    seller_id = await _clients(request).resolve_seller_id(principal.user_id)
-    await service.cancel_offer(session, offer_id, seller_id)
+    clients = _clients(request)
+    seller_id = await clients.resolve_seller_id(principal.user_id)
+    cancelled = await service.cancel_offer(session, offer_id, seller_id)
+
+    # Withdrawing the last live offer is what can let a request with no buyers go dormant.
+    await clients.report_offer_count(
+        cancelled.request_id, await service.count_live_offers(session, cancelled.request_id)
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

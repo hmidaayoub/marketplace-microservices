@@ -142,14 +142,22 @@ ORDER BY joined_at;
 -- from request_participant in the same transaction as the mutation that changed it.
 --
 -- The status is recomputed with them, because it is the same fact: a request nobody is
--- on is INACTIVE, and the join that puts someone back on it makes it OPEN again. That
--- makes the status derived rather than commanded - there is no call that sets it, so
--- it can never disagree with the participants it describes.
+-- on and nobody is selling into is INACTIVE, and either a join or an offer makes it OPEN
+-- again. That makes the status derived rather than commanded - there is no call that
+-- sets it, so it can never disagree with the counts it describes.
+--
+-- This is the only statement that decides a status, which is why SetOfferCount writes
+-- its column and then leaves the deciding to this: two places computing it would be two
+-- places to disagree. total_offers is read rather than recomputed, because the offers it
+-- counts live in another service's database.
 -- name: RecalculateDemand :one
 UPDATE purchase_request pr
 SET total_customers = d.total_customers,
     total_quantity  = d.total_quantity,
-    status          = CASE WHEN d.total_customers = 0 THEN 'INACTIVE' ELSE 'OPEN' END,
+    status          = CASE
+                          WHEN d.total_customers = 0 AND pr.total_offers = 0 THEN 'INACTIVE'
+                          ELSE 'OPEN'
+                      END,
     updated_at      = now()
 FROM (
     SELECT COUNT(*)::int                       AS total_customers,
@@ -159,3 +167,14 @@ FROM (
 ) d
 WHERE pr.request_id = @request_id
 RETURNING pr.*;
+
+-- How many live offers stand on this request, as offer-service counts them. An absolute
+-- number rather than a delta, so a call that is retried or arrives twice lands on the
+-- same answer instead of drifting away from the truth.
+--
+-- It writes the column and nothing else. The status that depends on it is left to
+-- RecalculateDemand, which the service calls next in the same transaction.
+-- name: SetOfferCount :exec
+UPDATE purchase_request
+SET total_offers = @total_offers
+WHERE request_id = @request_id;

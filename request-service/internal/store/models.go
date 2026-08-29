@@ -33,6 +33,7 @@ type PurchaseRequest struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	CreatedBy      pgtype.UUID
+	TotalOffers    int32
 }
 
 type RequestParticipant struct {

@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -148,6 +148,21 @@ async def live_offer_of(
         Offer.status.in_(OfferStatus.LIVE),
     )
     return (await session.scalars(stmt)).first()
+
+
+async def count_live_offers(session: AsyncSession, request_id: uuid.UUID) -> int:
+    """How many offers on this request still stand.
+
+    PENDING or APPROVED - the same set that stops a seller offering twice. A cancelled or
+    rejected offer is a record of a proposal rather than one, so it neither blocks a new
+    offer nor keeps a request from going dormant.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(Offer)
+        .where(Offer.request_id == request_id, Offer.status.in_(OfferStatus.LIVE))
+    )
+    return int(await session.scalar(stmt) or 0)
 
 
 async def get_offer(session: AsyncSession, offer_id: uuid.UUID) -> Offer:

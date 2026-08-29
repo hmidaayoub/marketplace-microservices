@@ -86,6 +86,11 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		r.Get("/{requestId}", cfg.Handler.InternalGet)
 		r.Get("/{requestId}/demand", cfg.Handler.InternalDemand)
 		r.Get("/{requestId}/participants", cfg.Handler.InternalParticipants)
+
+		// offer-service reporting how many live offers stand on a request, which is half
+		// of what OPEN and INACTIVE mean. Nothing else may say it: the offers are its
+		// data, and this service cannot read them.
+		r.Put("/{requestId}/offers/count", cfg.Handler.InternalSetOfferCount)
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {

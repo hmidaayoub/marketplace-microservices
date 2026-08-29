@@ -12,7 +12,7 @@ import {
   CircleDotIcon,
   CircleXIcon,
   ClockIcon,
-  UsersRoundIcon,
+  MoonIcon,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -28,12 +28,16 @@ interface StatusStyle {
 const STATUSES: Record<string, StatusStyle> = {
   // Requests
   OPEN: { label: 'Open', className: 'bg-success/12 text-success', icon: CircleDotIcon },
-  // Not a terminal state and not a fault: nobody is on this request at the moment, and
-  // one join makes it Open again. Muted rather than red for exactly that reason.
+  // Not a terminal state and not a fault: nobody wants this item at the moment and
+  // nobody is selling it, and either a join or an offer makes it Open again. Muted
+  // rather than red for exactly that reason.
+  //
+  // "Dormant" rather than "No buyers": a request held open by a seller's offer has no
+  // buyers either, and the two have to read differently.
   INACTIVE: {
-    label: 'No buyers',
+    label: 'Dormant',
     className: 'bg-muted text-muted-foreground',
-    icon: UsersRoundIcon,
+    icon: MoonIcon,
   },
   // Offers
   PENDING: { label: 'Pending review', className: 'bg-warning/15 text-warning', icon: ClockIcon },
