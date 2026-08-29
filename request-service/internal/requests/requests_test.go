@@ -716,6 +716,35 @@ func TestListRequests_filtersByItemNameAndStatus(t *testing.T) {
 	}
 }
 
+// What browsing and searching are built on, one level up: the browse page asks for OPEN
+// and a search drops the filter. Dormant demand is not worth putting in front of someone
+// looking around - nothing is happening on it - but it has to be findable by name,
+// because the platform allows one request per item and somebody typing that name would
+// otherwise be refused by a request they were never shown.
+func TestListRequests_dormantDemandIsFoundByNameButNotByBrowsing(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+
+	requestID := h.createRequest(owner, "Ceramic Mug", 1)
+	if res := h.do(http.MethodDelete, "/api/requests/"+requestID+"/participants/me", owner, ""); res.code != http.StatusNoContent {
+		t.Fatalf("emptying it: status %d body %s", res.code, res.raw)
+	}
+
+	browsing := h.do(http.MethodGet, "/api/requests?status=OPEN", "", "")
+	if len(browsing.list) != 0 {
+		t.Errorf("browsing shows %d requests, want none - it is dormant: %s",
+			len(browsing.list), browsing.raw)
+	}
+
+	searching := h.do(http.MethodGet, "/api/requests?q=mug", "", "")
+	if len(searching.list) != 1 {
+		t.Fatalf("searching finds %d requests, want 1: %s", len(searching.list), searching.raw)
+	}
+	if got := searching.list[0]["status"]; got != "INACTIVE" {
+		t.Errorf("status = %v, want INACTIVE", got)
+	}
+}
+
 func TestListRequests_rejectsOversizedPage(t *testing.T) {
 	h := newHarness(t)
 	_, token := h.newCustomer()

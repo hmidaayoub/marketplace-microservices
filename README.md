@@ -22,8 +22,8 @@ seller service ever stores or returns one.
 | API Gateway | 8080 | — | Implemented (nginx) |
 | Swagger UI | 8080`/docs` | — | Aggregates all seven specs |
 
-368 tests pass in total: 87 across the four Maven modules, 124 across the two Go
-modules (85 request, 39 admin), and 157 across the two Python modules (91 offer,
+369 tests pass in total: 87 across the four Maven modules, 125 across the two Go
+modules (86 request, 39 admin), and 157 across the two Python modules (91 offer,
 66 notification).
 
 Every service in the spec is implemented, the notification events of section 18 flow
@@ -310,6 +310,12 @@ Rules worth knowing:
   delta, which is what makes the call safe to retry — a report that arrives twice lands
   on the same answer, and a report that never arrives is repaired by the next one on that
   request rather than needing to be remembered.
+- **Dormant demand is found by name, never by browsing.** The browse page asks for
+  `status=OPEN`, so a request nobody wants and nobody is selling stays out of the way of
+  someone looking around — there is nothing happening on it. A search drops the filter
+  and looks at every status, which it has to: the platform allows one request per item,
+  so somebody typing "Espresso Machine" must be able to find the dormant one and join it,
+  rather than being refused by a request they were never shown.
 - **A request never ends.** Demand does not stop being demand because one deal was
   struck against it, and it is not the platform's to withdraw on a customer's behalf.
   A request nobody is on and nobody is selling into is `INACTIVE`, which describes who is
