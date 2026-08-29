@@ -22,18 +22,11 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import type { PurchaseRequest, RequestStatus } from '@/api/types'
+import type { PurchaseRequest } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
 import { createOffer } from '@/store/offersSlice'
 import {
@@ -44,9 +37,6 @@ import {
   similarCleared,
 } from '@/store/requestsSlice'
 
-/** Any status at all - Radix's Select has no value for "none selected". */
-const ANY = 'ANY'
-
 export default function BrowseRequests() {
   const dispatch = useAppDispatch()
   const { browse, loading, error } = useAppSelector((s) => s.requests)
@@ -55,10 +45,8 @@ export default function BrowseRequests() {
   // flashing "sign in" at somebody who already is would be worse than showing nothing.
   const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
   const location = useLocation()
-  const [filters, setFilters] = useState<{ q: string; status: RequestStatus | typeof ANY }>({
-    q: '',
-    status: 'OPEN',
-  })
+  const [query, setQuery] = useState('')
+  const searching = query.trim().length > 0
 
   useEffect(() => {
     // Typing should not fire a request per keystroke; the pause is short enough that
@@ -66,13 +54,22 @@ export default function BrowseRequests() {
     const id = setTimeout(() => {
       dispatch(
         fetchRequests({
-          q: filters.q || undefined,
-          status: filters.status === ANY ? undefined : filters.status,
+          q: query.trim() || undefined,
+          // Browsing shows live demand only. A dormant request - nobody wants the item
+          // and nobody is selling it - is not something to put in front of someone who
+          // came to see what the platform has: there is nothing happening on it.
+          //
+          // Searching is the exception, and it has to be. The platform allows one
+          // request per item, so somebody typing "Espresso Machine" has to be able to
+          // find the dormant one and join it - otherwise they would be told the name is
+          // taken by a request they were never shown. So a search drops the filter and
+          // looks at every status.
+          status: searching ? undefined : 'OPEN',
         }),
       )
     }, 250)
     return () => clearTimeout(id)
-  }, [dispatch, filters])
+  }, [dispatch, query, searching])
 
   return (
     <div className="space-y-6">
@@ -101,34 +98,25 @@ export default function BrowseRequests() {
           <div className="relative min-w-48 flex-1">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              value={filters.q}
+              value={query}
               placeholder="Search for an espresso machine…"
               aria-label="Search requests"
               className="pl-8"
-              onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+              onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-
-          <Select
-            value={filters.status}
-            onValueChange={(status) =>
-              setFilters((f) => ({ ...f, status: status as RequestStatus | typeof ANY }))
-            }
-          >
-            <SelectTrigger className="w-52" aria-label="Filter by status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Any status</SelectItem>
-              <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="INACTIVE">Dormant — no buyers, no offers</SelectItem>
-            </SelectContent>
-          </Select>
 
           <Separator orientation="vertical" className="hidden h-6! sm:block" />
 
           <p className="text-sm text-muted-foreground tabular-nums">
-            {loading ? <Spinner className="size-4" /> : `${browse.length} shown`}
+            {loading ? (
+              <Spinner className="size-4" />
+            ) : (
+              // Said plainly when a search is widening what is on screen, because the
+              // list is then showing things the same page would not have shown a
+              // moment ago.
+              `${browse.length} ${searching ? 'found, dormant requests included' : 'shown'}`
+            )}
           </p>
         </CardContent>
       </Card>
@@ -157,11 +145,15 @@ export default function BrowseRequests() {
             <EmptyMedia variant="icon">
               <SearchIcon />
             </EmptyMedia>
-            <EmptyTitle>Nothing matches those filters</EmptyTitle>
+            <EmptyTitle>
+              {searching ? 'Nothing matches that search' : 'No open demand yet'}
+            </EmptyTitle>
             <EmptyDescription>
               {role === 'SELLER'
-                ? 'Try a different search, or widen the status filter to any. If nobody has asked for what you sell, offer on it anyway — the request opens with no buyers and they join it.'
-                : 'Try a different search, or widen the status filter to any.'}
+                ? 'If nobody has asked for what you sell, offer on it anyway — the request opens with no buyers and they join it.'
+                : searching
+                  ? 'Nothing carries that name, dormant requests included. Open a request for it and other buyers can join you.'
+                  : 'Nobody is asking for anything at the moment. Open the first request and sellers will bid against it.'}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
