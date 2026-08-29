@@ -22,7 +22,6 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
@@ -106,18 +105,10 @@ export default function BrowseRequests() {
             />
           </div>
 
-          <Separator orientation="vertical" className="hidden h-6! sm:block" />
-
-          <p className="text-sm text-muted-foreground tabular-nums">
-            {loading ? (
-              <Spinner className="size-4" />
-            ) : (
-              // Said plainly when a search is widening what is on screen, because the
-              // list is then showing things the same page would not have shown a
-              // moment ago.
-              `${browse.length} ${searching ? 'found, dormant requests included' : 'shown'}`
-            )}
-          </p>
+          {/* The results speak for themselves; a tally of them said nothing the grid
+              below does not. The spinner stays, because a search that already has
+              results on screen shows no skeleton and would otherwise look inert. */}
+          {loading && <Spinner className="size-4 text-muted-foreground" />}
         </CardContent>
       </Card>
 
