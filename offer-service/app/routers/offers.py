@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import service
+from app.clients import ServiceClients
 from app.db import get_session
 from app.models import Offer
 from app.schemas import CompetingOfferOut, OfferCreate, OfferOut, OfferUpdate
@@ -25,7 +26,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SellerOnly = Annotated[Principal, Depends(require_role(ROLE_SELLER))]
 
 
-def _clients(request: Request):
+def _clients(request: Request) -> ServiceClients:
     return request.app.state.clients
 
 
@@ -35,21 +36,32 @@ def _clients(request: Request):
     # response_model stays None because the handler projects by role; `responses`
     # documents the shape without FastAPI filtering the dict on the way out.
     response_model=None,
-    responses={201: {"model": OfferOut}},
+    responses={
+        201: {"model": OfferOut},
+        409: {
+            "description": (
+                "This seller already has a live offer on this request. The body carries it "
+                "as `existing` - update that one with PUT /api/offers/{offerId}."
+            )
+        },
+    },
 )
 async def submit_offer(
     payload: OfferCreate, principal: SellerOnly, session: SessionDep, request: Request
 ) -> dict[str, Any]:
-    """R5: only against an existing request. R6: always starts PENDING."""
+    """R5: only against a request that exists. R6: always starts PENDING.
+
+    The offer names either the request it answers or the item it is for. Both end at the
+    same place - an offer stored against a request that exists - and they differ only in
+    who had to have gone first.
+
+    One live offer per seller per request: a seller who has already answered this demand
+    is refused with their existing offer attached, to update rather than duplicate.
+    """
     clients = _clients(request)
 
     seller_id = await clients.resolve_seller_id(principal.user_id)
-
-    # The request still has to exist - that is R5 - but its status is no longer consulted.
-    # A request is OPEN or INACTIVE, neither is terminal, and an INACTIVE one can be
-    # revived by a single join, so refusing an offer against it would only mean refusing
-    # a seller who is early.
-    await clients.get_request(payload.request_id)
+    request_id = await _demand_answered(clients, payload)
 
     # Resolved before the offer is written, because it is a network call: section 18
     # addresses NEW_OFFER to "Admin" rather than to one person, and notification-service
@@ -57,7 +69,7 @@ async def submit_offer(
     # auth-service unreachable, or no admin account - simply announces nothing.
     admin_ids = await clients.admin_user_ids()
 
-    offer = await service.create_offer(session, seller_id, payload, admin_ids)
+    offer = await service.create_offer(session, seller_id, request_id, payload, admin_ids)
 
     # The event is already durable; this only saves it waiting for the next poll.
     request.app.state.relay.wake()
@@ -136,6 +148,31 @@ async def cancel_offer(
     seller_id = await _clients(request).resolve_seller_id(principal.user_id)
     await service.cancel_offer(session, offer_id, seller_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def _demand_answered(clients: ServiceClients, payload: OfferCreate) -> uuid.UUID:
+    """The request this offer is against, opening one for the item if it needs to.
+
+    Given a requestId, the request only has to exist - that is R5 - and its status is not
+    consulted. A request is OPEN or INACTIVE, neither is terminal, and an INACTIVE one is
+    revived by a single join, so refusing an offer against it would only mean refusing a
+    seller who is early.
+
+    Given an item instead, there is no request to look up: nobody has asked for this
+    product, and a seller with stock should not have to wait for someone to. So one is
+    opened with no buyers on it, and the offer is what it carries until the first buyer
+    joins. request-service decides whether that means creating anything - an item that
+    already has a request hands back the one it has, so this can never split demand.
+    """
+    if payload.request_id is not None:
+        await clients.get_request(payload.request_id)
+        return payload.request_id
+
+    item = payload.item
+    opened = await clients.ensure_request_for_item(
+        item.item_name, item.description, item.category
+    )
+    return opened.request_id
 
 
 def _project_for_seller(offer: Offer, own_seller_id: uuid.UUID) -> dict[str, Any]:

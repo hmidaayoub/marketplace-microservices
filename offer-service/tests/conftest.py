@@ -8,7 +8,9 @@ DATABASE_URL short-circuits the container so the suite can also run against a Po
 that is already up.
 """
 
+import json
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -74,14 +76,27 @@ class FakeUpstream:
         self.admins: list[uuid.UUID] = []
         self.seen_api_keys: list[str | None] = []
 
+        # request_item_key, roughly: request-service normalizes an item name before
+        # matching on it, and the find-or-create is only interesting here because it can
+        # return a request that already exists.
+        self.requests_by_item: dict[str, uuid.UUID] = {}
+        self.opened_items: list[dict] = []
+
+        # Flipped by the tests that assert what an unreachable request-service costs.
+        self.request_service_down = False
+
     def add_admin(self, user_id: uuid.UUID) -> None:
         self.admins.append(user_id)
 
     def add_seller(self, user_id: uuid.UUID, seller_id: uuid.UUID) -> None:
         self.sellers[user_id] = seller_id
 
-    def add_request(self, request_id: uuid.UUID, status: str = "OPEN") -> None:
+    def add_request(
+        self, request_id: uuid.UUID, status: str = "OPEN", item_name: str | None = None
+    ) -> None:
         self.requests[request_id] = status
+        if item_name is not None:
+            self.requests_by_item[_item_key(item_name)] = request_id
 
     async def handler(self, request):  # httpx.Request -> httpx.Response
         import httpx
@@ -101,22 +116,62 @@ class FakeUpstream:
                 200, json=[{"userId": str(a), "role": "ADMIN"} for a in self.admins]
             )
 
+        if path.startswith("/internal/requests") and self.request_service_down:
+            return httpx.Response(500, json={"message": "boom", "status": 500})
+
+        if path == "/internal/requests" and request.method == "POST":
+            body = json.loads(request.content)
+            self.opened_items.append(body)
+            key = _item_key(body["itemName"])
+
+            # Find-or-create, as request-service implements it: an item that already has
+            # a request hands that one back, and only a new item opens one.
+            existing = self.requests_by_item.get(key)
+            if existing is not None:
+                return httpx.Response(200, json=self._request_body(existing))
+
+            opened = uuid.uuid4()
+            self.requests_by_item[key] = opened
+            # INACTIVE with nobody on it, which is what a request with no participants is.
+            self.requests[opened] = "INACTIVE"
+            return httpx.Response(
+                201, json=self._request_body(opened, total_customers=0, total_quantity=0)
+            )
+
         if path.startswith("/internal/requests/"):
             raw = path.rsplit("/", 1)[-1]
             status = self.requests.get(uuid.UUID(raw))
             if status is None:
                 return httpx.Response(404, json={"message": "not found", "status": 404})
-            return httpx.Response(
-                200,
-                json={
-                    "requestId": raw,
-                    "status": status,
-                    "totalCustomers": 2,
-                    "totalQuantity": 8,
-                },
-            )
+            return httpx.Response(200, json=self._request_body(uuid.UUID(raw), status=status))
 
         return httpx.Response(500, json={"message": "unexpected call", "status": 500})
+
+    def _request_body(
+        self,
+        request_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        total_customers: int = 2,
+        total_quantity: int = 8,
+    ) -> dict:
+        return {
+            "requestId": str(request_id),
+            "status": status or self.requests.get(request_id, "OPEN"),
+            "totalCustomers": total_customers,
+            "totalQuantity": total_quantity,
+        }
+
+
+def _item_key(item_name: str) -> str:
+    """Stands in for request-service's request_item_key: case and punctuation fold away.
+
+    Deliberately cruder than the real one, which also resolves abbreviations and drops
+    filler. What matters to this suite is only that "Espresso Machine" and "espresso
+    machine" are one item, so the stub does not have to be right about the rest - and
+    the real normalization is pinned down where it lives, in request-service's own suite.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", item_name.lower()).strip()
 
 
 class RecordingPublisher:

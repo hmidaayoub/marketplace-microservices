@@ -22,8 +22,8 @@ seller service ever stores or returns one.
 | API Gateway | 8080 | — | Implemented (nginx) |
 | Swagger UI | 8080`/docs` | — | Aggregates all seven specs |
 
-315 tests pass in total: 87 across the four Maven modules, 96 across the two Go
-modules (60 request, 36 admin), and 132 across the two Python modules (66 offer,
+352 tests pass in total: 87 across the four Maven modules, 115 across the two Go
+modules (76 request, 39 admin), and 150 across the two Python modules (84 offer,
 66 notification).
 
 Every service in the spec is implemented, the notification events of section 18 flow
@@ -197,6 +197,7 @@ who want it. Endpoints follow spec section 10.
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
 | `PUT` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
 | `DELETE` | `/api/requests/{requestId}/participants/me` | CUSTOMER |
+| `POST` | `/internal/requests` | internal key |
 | `GET` | `/internal/requests/{requestId}` | internal key |
 | `GET` | `/internal/requests/{requestId}/demand` | internal key |
 | `GET` | `/internal/requests/{requestId}/participants` | internal key |
@@ -212,13 +213,16 @@ Rules worth knowing:
 - **Creating a request enrolls its creator** as the first participant (R1 + R3). A
   request never exists that nobody wants, so demand starts at one customer.
 - **One item, one request — the same name cannot be created twice.** A create whose item
-  name already belongs to an open request is refused with `409`, and that request comes
+  name already belongs to a request is refused with `409`, and that request comes
   back in the response as `existing` for the customer to join. Demand only pools if it
   lands in one place, and two requests for "Espresso Machine" split the number a seller
   is bidding against, so there is nothing for the second one to create. Asking again for
   something you already asked for is the same `409` with no `existing`, because offering
-  somebody a request they are already in is no use to them. Only `OPEN` requests match —
-  one nobody is on has no demand to join, so naming it opens a fresh request. The name is locked
+  somebody a request they are already in is no use to them. Every status matches, not
+  just `OPEN`: a request nobody is on is the one a join helps most — it is how the item
+  becomes demand again — and it may already carry a seller's offer waiting for buyers.
+  The refusal says which of the two it is handing over, because "join the open request"
+  would read as a mistake about one that is empty. The name is locked
   for the length of the transaction (`pg_advisory_xact_lock`), so two customers naming
   the same new item at once cannot both find nothing and both create. Because the name
   carries this weight, it is all the create form asks for besides a quantity; the
@@ -280,9 +284,16 @@ Rules worth knowing:
   `/internal/requests/{id}/participants`, which is what Admin/Contact uses to grant
   ContactAccess — so a seller browsing demand cannot enumerate the customers behind it.
 - **A request records its owner but grants them no power over it.** `created_by` is
-  still set when the request is created, because it is worth knowing who opened the
-  demand. It is not a permission: the creator is a participant like every other, and
-  the only thing any of them may do is join, change their own quantity, or leave.
+  still set when a customer creates the request, because it is worth knowing who opened
+  the demand. It is not a permission: the creator is a participant like every other, and
+  the only thing any of them may do is join, change their own quantity, or leave. A
+  request opened for a seller's offer has no owner at all — nobody asked for the item —
+  and `createdBy` is then absent from the response rather than sixteen zero bytes.
+- **A request can exist with nobody on it from the start.** `POST /internal/requests` is
+  find-or-create by item name, and it is what lets offer-service store an offer against a
+  product no customer has asked for. It enrolls nobody, takes no quantity, records no
+  owner and writes no event — and it takes the same name lock as a create, so a customer
+  naming that item at the same instant cannot open a second request for it.
 - **The status is derived, not commanded.** `RecalculateDemand` writes it in the same
   statement and the same transaction as `total_customers` and `total_quantity`, from
   the participant rows those totals are counted from — so it cannot disagree with them.
@@ -312,13 +323,37 @@ Owns seller proposals against aggregated demand (spec section 11).
 Rules worth knowing:
 
 - **An offer may only target a request that exists** (R5), and that is the whole of it.
-  Submission calls request-service's internal API first and an unknown request is a 404.
-  No status refuses an offer: neither `OPEN` nor `INACTIVE` ends a request, and one join
-  revives an empty one, so a refusal here would only turn away a seller who was early.
-  Several sellers compete on the same demand, and an approval does not close the door on
-  the ones who come after.
+  Submission calls request-service's internal API first and an unknown `requestId` is a
+  404. No status refuses an offer: neither `OPEN` nor `INACTIVE` ends a request, and one
+  join revives an empty one, so a refusal here would only turn away a seller who was
+  early. Several sellers compete on the same demand, and an approval does not close the
+  door on the ones who come after.
+- **An offer names either the request it answers or the item it is for.** Exactly one of
+  `requestId` and `item` — both would be two answers to one question, neither leaves the
+  offer attached to anything, and either mistake is a 400. `item` is the case where
+  nothing carries the product yet: demand and supply do not have to arrive in that order,
+  so a seller holding stock names the item and request-service opens the request the
+  offer needs, with no buyers on it. That request is `INACTIVE`, which is simply what
+  "no participants" is called, and the first buyer to want the item finds it rather than
+  opening a rival one — so the offer is never left bidding against nobody while the
+  demand pools somewhere else. An item that already has a request creates nothing: the
+  offer lands on the demand already there, however the seller spelled the name.
+- **A seller answers a request once.** Bidding twice against the same demand is one
+  proposal changed, not two, so a second submission is refused with `409` and the first
+  offer attached as `existing` — update that one with `PUT /api/offers/{offerId}`, which
+  is the call that already exists for exactly this. Live means `PENDING` or `APPROVED`;
+  a cancelled or rejected offer does not block a fresh one, because neither can be
+  updated and counting them would leave the seller unable to offer *and* unable to
+  change what they have. The rule is about one seller repeating themselves and not about
+  the demand: other sellers still compete freely on the same request. Enforced by a
+  partial unique index on `(seller_id, request_id)`, not only by the read before the
+  insert, which two concurrent submissions would both pass.
 - **A new offer is always `PENDING`** (R6). `status` is not a field on the create schema
-  at all, so a caller cannot start one anywhere else.
+  at all, so a caller cannot start one anywhere else. An offer on a request nobody has
+  joined stays there: an approval exists to release the buyers' phone numbers, so
+  Admin/Contact refuses one that would grant nobody. The seller waits for a buyer, which
+  is the same thing they would be doing if they had not been allowed to offer at all —
+  except that now the demand has somewhere to gather.
 - **Only a `PENDING` offer can be changed or decided.** Once approved, contact
   permission may already have been granted against exactly the terms the admin saw, so
   letting the seller rewrite the price afterwards would change what was approved. A

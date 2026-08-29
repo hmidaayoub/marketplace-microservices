@@ -18,6 +18,15 @@ type createRequestBody struct {
 	Quantity    int32  `json:"quantity"`
 }
 
+// ensureRequestBody is the internal find-or-create body. It is createRequestBody
+// without the quantity, and the missing field is the whole point: nobody is joining, so
+// there is no amount anybody wants.
+type ensureRequestBody struct {
+	ItemName    string `json:"itemName"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+}
+
 type quantityBody struct {
 	Quantity int32 `json:"quantity"`
 }
@@ -33,8 +42,12 @@ type statusBody struct {
 // /internal/requests/{id}/participants, so a seller browsing demand cannot enumerate
 // the customers behind it (R8/R9 keep contact data behind an explicit grant).
 type requestResponse struct {
-	RequestID      uuid.UUID `json:"requestId"`
-	CreatedBy      uuid.UUID `json:"createdBy,omitempty"`
+	RequestID uuid.UUID `json:"requestId"`
+
+	// The customer who opened the request. Absent when nobody did - a request opened for
+	// a seller offering against an item has no buyer behind it.
+	CreatedBy *uuid.UUID `json:"createdBy,omitempty"`
+
 	ItemName       string    `json:"itemName"`
 	Description    string    `json:"description"`
 	Category       string    `json:"category"`
@@ -89,17 +102,24 @@ func toResponse(r store.PurchaseRequest) requestResponse {
 		UpdatedAt:      r.UpdatedAt,
 	}
 	// The owner is a customerId, which participants already learn nothing else from -
-	// it is the same identifier the request is keyed by internally, and knowing who may
-	// close a request is part of reading it.
+	// it is the same identifier the request is keyed by internally, and knowing who
+	// opened a request is part of reading it.
+	//
+	// A pointer on the way out, because omitempty does not omit a uuid.UUID: it is a
+	// [16]byte, and an array is never empty as far as encoding/json is concerned. That
+	// went unnoticed while every request had a creator. One opened for a seller has none
+	// by design, and "createdBy": "00000000-0000-0000-0000-000000000000" would name a
+	// customer who does not exist.
 	if r.CreatedBy.Valid {
-		out.CreatedBy = uuid.UUID(r.CreatedBy.Bytes)
+		owner := uuid.UUID(r.CreatedBy.Bytes)
+		out.CreatedBy = &owner
 	}
 	return out
 }
 
 // toScoredResponses carries the similarity across, which is the one thing a near-match
 // has that a plain request does not.
-func toScoredResponses(rs []store.FindSimilarOpenRequestsRow) []requestResponse {
+func toScoredResponses(rs []store.FindSimilarRequestsRow) []requestResponse {
 	out := make([]requestResponse, 0, len(rs))
 	for _, r := range rs {
 		scored := toResponse(r.PurchaseRequest)
@@ -132,6 +152,23 @@ func (b *createRequestBody) validate() string {
 		return "itemName must be at most 200 characters"
 	case b.Quantity <= 0:
 		return "quantity must be greater than zero"
+	}
+	return ""
+}
+
+// validate holds the same name rules as a customer create. A request opened for a
+// seller is a request like any other, and a name the platform would refuse from a
+// customer is not one it should accept here.
+func (b *ensureRequestBody) validate() string {
+	b.ItemName = strings.TrimSpace(b.ItemName)
+	b.Description = strings.TrimSpace(b.Description)
+	b.Category = strings.TrimSpace(b.Category)
+
+	switch {
+	case b.ItemName == "":
+		return "itemName is required"
+	case len(b.ItemName) > 200:
+		return "itemName must be at most 200 characters"
 	}
 	return ""
 }

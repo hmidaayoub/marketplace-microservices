@@ -25,6 +25,13 @@ class OfferStatus:
     #  R7: only an admin decides, and only on an offer still awaiting review.
     DECIDABLE = (APPROVED, REJECTED)
 
+    # A proposal that still stands, as opposed to a record of one that does not. A
+    # seller may hold one of these per request: offering twice against the same demand
+    # is one proposal changed, not two. Cancelled and rejected offers are outside it
+    # deliberately - neither can be updated, so counting them would lock the seller out
+    # of the request with nothing to update instead.
+    LIVE = (PENDING, APPROVED)
+
 
 class NotificationOutbox(Base):
     """Transactional outbox for notification events (see docs/events.md).
@@ -109,6 +116,16 @@ class Offer(Base):
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="offer_currency_iso4217_shape"),
         Index("idx_offer_request", "request_id"),
         Index("idx_offer_seller", "seller_id"),
+        # One live offer per seller per request. Unique in the database and not only in
+        # the service, for the same reason request_participant is: two concurrent
+        # submissions would both pass a read-then-write check and both insert.
+        Index(
+            "idx_offer_one_live_per_seller_request",
+            "seller_id",
+            "request_id",
+            unique=True,
+            postgresql_where=text("status IN ('PENDING', 'APPROVED')"),
+        ),
         # Serves GET /internal/offers/pending, the admin review queue.
         Index("idx_offer_status_created", "status", "created_at"),
     )

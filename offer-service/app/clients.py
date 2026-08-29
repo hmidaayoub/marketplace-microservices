@@ -100,6 +100,34 @@ class ServiceClients:
             raise UpstreamUnavailable("seller-service response had no sellerId")
         return uuid.UUID(seller_id)
 
+    async def ensure_request_for_item(
+        self, item_name: str, description: str, category: str
+    ) -> PurchaseRequest:
+        """The request an item is carried by, opening one with no buyers if it has none.
+
+        This is the other half of R5. An offer still only exists against a request - what
+        changes is that a seller no longer has to wait for one: naming the item is enough,
+        and request-service opens it with nobody on it for buyers to join later.
+
+        It is request-service that decides whether anything is created. Two requests for
+        one item would split the total the platform exists to pool, so an item that
+        already has a request - open, or emptied, or opened by another seller's offer -
+        hands that one back and the offer joins the demand already there.
+        """
+        url = f"{self._request_base_url}/internal/requests"
+        payload = {"itemName": item_name, "description": description, "category": category}
+        try:
+            response = await self._client.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            raise UpstreamUnavailable(f"request-service: {exc}") from exc
+
+        # 201 when it opened one, 200 when the item already had a request. Both carry the
+        # request, and this caller wants the id either way.
+        if response.status_code not in (200, 201):
+            raise UpstreamUnavailable(f"request-service returned {response.status_code}")
+
+        return _to_request(response.json())
+
     async def get_request(self, request_id: uuid.UUID) -> PurchaseRequest:
         url = f"{self._request_base_url}/internal/requests/{request_id}"
         try:
@@ -112,10 +140,13 @@ class ServiceClients:
         if response.status_code != 200:
             raise UpstreamUnavailable(f"request-service returned {response.status_code}")
 
-        body = response.json()
-        return PurchaseRequest(
-            request_id=uuid.UUID(body["requestId"]),
-            status=body["status"],
-            total_customers=body.get("totalCustomers", 0),
-            total_quantity=body.get("totalQuantity", 0),
-        )
+        return _to_request(response.json())
+
+
+def _to_request(body: dict) -> PurchaseRequest:
+    return PurchaseRequest(
+        request_id=uuid.UUID(body["requestId"]),
+        status=body["status"],
+        total_customers=body.get("totalCustomers", 0),
+        total_quantity=body.get("totalQuantity", 0),
+    )

@@ -78,6 +78,11 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Route("/internal/requests", func(r chi.Router) {
 		r.Use(middleware.RequireInternalAPIKey(cfg.InternalAPIKey))
 
+		// Find-or-create, for offer-service: a seller offering against an item nobody
+		// has requested needs a request for the offer to hang on. Internal because
+		// opening demand is otherwise a customer action - this one enrolls nobody.
+		r.Post("/", cfg.Handler.InternalEnsure)
+
 		r.Get("/{requestId}", cfg.Handler.InternalGet)
 		r.Get("/{requestId}/demand", cfg.Handler.InternalDemand)
 		r.Get("/{requestId}/participants", cfg.Handler.InternalParticipants)

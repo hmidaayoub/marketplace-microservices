@@ -61,9 +61,12 @@ export interface paths {
          * Create a purchase request
          * @description Opens a request other customers can join. The caller becomes its first
          *     participant; the customerId is resolved from the token, never sent.
-         *     If an open request already carries this item name, nothing is created:
-         *     the 409 comes back with that request attached, and joining it is the
-         *     customer's own call through the participants endpoint. A merely similar
+         *     If a request already carries this item name, nothing is created: the 409
+         *     comes back with that request attached, and joining it is the
+         *     customer's own call through the participants endpoint. That holds for a
+         *     request with no buyers on it too - one a seller opened by offering
+         *     against the item, or one everybody has left - because joining is what
+         *     makes it demand again. A merely similar
          *     name is not refused - see /api/requests/similar, which is what the
          *     new-request form shows while the name is being typed.
          */
@@ -117,7 +120,7 @@ export interface paths {
                         "application/json": components["schemas"]["httpx.ErrorBody"];
                     };
                 };
-                /** @description Already a participant, or this item is already open demand */
+                /** @description Already a participant, or this item already has a request */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -196,10 +199,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Find open requests whose item name is close to this one
+         * Find requests whose item name is close to this one
          * @description Powers the suggestions a customer sees while naming an item, and is the
          *     same match a create is refused on. Open to everyone, signed in or not:
-         *     it returns the browse projection, ranked by similarity.
+         *     it returns the browse projection, ranked by similarity. Requests with no
+         *     buyers on them are included and carry their status, because those are
+         *     often the ones most worth joining - a seller may already have offered
+         *     against the item.
          */
         get: {
             parameters: {
@@ -580,6 +586,10 @@ export interface components {
         "requests.requestResponse": {
             category?: string;
             createdAt?: string;
+            /**
+             * @description The customer who opened the request. Absent when nobody did - a request opened for
+             *     a seller offering against an item has no buyer behind it.
+             */
             createdBy?: string;
             description?: string;
             /**

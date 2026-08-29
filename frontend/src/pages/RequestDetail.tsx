@@ -38,9 +38,9 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
-import { isFullOffer } from '@/api/types'
+import { isFullOffer, type Offer } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
-import { createOffer, fetchOffersForRequest } from '@/store/offersSlice'
+import { cancelOffer, createOffer, fetchOffersForRequest, updateOffer } from '@/store/offersSlice'
 import {
   fetchMyRequests,
   fetchRequest,
@@ -81,7 +81,21 @@ export default function RequestDetail() {
     )
   }
 
-  const isOpen = request.status === 'OPEN'
+  // Nothing here is gated on the status any more. A request is OPEN or INACTIVE, and
+  // INACTIVE means nobody is on it rather than that it has ended - the API takes a join
+  // or an offer against either, and a join is what turns one back into the other.
+  // Hiding these on an empty request would hide them on exactly the request that most
+  // needs them: the one a seller opened by offering against an item nobody had asked
+  // for, which is waiting for its first buyer.
+  const hasBuyers = (request.totalCustomers ?? 0) > 0
+  // A seller answers a request once, so there is at most one of these. It is found by
+  // the projection rather than by comparing ids: only the caller's own offer comes back
+  // in full, a rival's arrives with the sellerId withheld. Cancelled and rejected ones
+  // are excluded - neither can be changed, and the API would let a fresh offer replace
+  // them, so showing one as "your offer" would offer an edit that cannot happen.
+  const myOffer = offers.find(
+    (offer) => isFullOffer(offer) && (offer.status === 'PENDING' || offer.status === 'APPROVED'),
+  ) as Offer | undefined
   // The creator is added as a participant when the request is made, so an owner is
   // always joined and never sees Join either.
   const hasJoined = mine.some((r) => r.requestId === id)
@@ -113,11 +127,20 @@ export default function RequestDetail() {
 
       <ErrorAlert>{requestError || offerError}</ErrorAlert>
 
-      {user?.role === 'CUSTOMER' && isOpen && (
-        <Participation id={id} hasJoined={hasJoined} />
+      {user?.role === 'CUSTOMER' && (
+        <Participation id={id} hasJoined={hasJoined} hasBuyers={hasBuyers} />
       )}
-      {user?.role === 'SELLER' && isOpen && <OfferForm requestId={id} />}
-      {!signedIn && isOpen && <SignInToTakePart />}
+      {user?.role === 'SELLER' && (
+        // Keyed on the offer, so making, changing or withdrawing one reseeds the fields
+        // by remounting rather than by an effect that writes state during render.
+        <OfferForm
+          key={myOffer?.offerId ?? 'new'}
+          requestId={id}
+          hasBuyers={hasBuyers}
+          mine={myOffer}
+        />
+      )}
+      {!signedIn && <SignInToTakePart />}
 
       <section className="space-y-3">
         <h2 className="font-heading text-lg font-medium">
@@ -239,7 +262,15 @@ function Stat({
   )
 }
 
-function Participation({ id, hasJoined }: { id: string; hasJoined: boolean }) {
+function Participation({
+  id,
+  hasJoined,
+  hasBuyers,
+}: {
+  id: string
+  hasJoined: boolean
+  hasBuyers: boolean
+}) {
   const navigate = useNavigate()
   const dispatch = useAppDispatch()
   const [quantity, setQuantity] = useState(1)
@@ -266,7 +297,9 @@ function Participation({ id, hasJoined }: { id: string; hasJoined: boolean }) {
         <CardDescription>
           {hasJoined
             ? 'You are on this request. Change the quantity you asked for, or leave it.'
-            : 'Joining adds your quantity to the total.'}
+            : hasBuyers
+              ? 'Joining adds your quantity to the total.'
+              : 'Nobody is on this request yet. Joining is what makes it demand — and sellers bid against that total, not your quantity alone.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap items-end gap-3">
@@ -324,15 +357,38 @@ function Participation({ id, hasJoined }: { id: string; hasJoined: boolean }) {
   )
 }
 
-function OfferForm({ requestId }: { requestId: string }) {
+/**
+ * The seller's answer to this request - made once, changed thereafter.
+ *
+ * A second offer against demand they have already bid on is refused by the API, so
+ * offering that form at all would be offering a button that can only fail. When they
+ * already have a live offer, this is what edits it; the create form is what somebody
+ * who has not answered yet sees.
+ */
+function OfferForm({
+  requestId,
+  hasBuyers,
+  mine,
+}: {
+  requestId: string
+  hasBuyers: boolean
+  mine?: Offer
+}) {
   const dispatch = useAppDispatch()
   const [saving, setSaving] = useState(false)
+  // Seeded from the offer the page loaded, if there is one. The caller keys this
+  // component on it, so a new, changed or withdrawn offer arrives as a fresh mount
+  // rather than as state written after the fact.
   const [form, setForm] = useState({
-    availableQuantity: 1,
-    pricePerUnit: '0.00',
-    currency: 'EUR',
-    description: '',
+    availableQuantity: mine?.availableQuantity ?? 1,
+    pricePerUnit: mine?.pricePerUnit ?? '0.00',
+    currency: mine?.currency ?? 'EUR',
+    description: mine?.description ?? '',
   })
+
+  // An approved offer is frozen: contact permission may already have been granted
+  // against exactly these terms, so changing them would change what the admin approved.
+  const editable = !mine || mine.status === 'PENDING'
 
   const set = (key: keyof typeof form) => (event: { target: { value: string } }) =>
     setForm((f) => ({
@@ -343,21 +399,44 @@ function OfferForm({ requestId }: { requestId: string }) {
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     setSaving(true)
-    const result = await dispatch(createOffer({ requestId, ...form }))
+    const result = mine
+      ? await dispatch(updateOffer({ offerId: mine.offerId!, body: form }))
+      : await dispatch(createOffer({ requestId, ...form }))
     setSaving(false)
-    if (createOffer.fulfilled.match(result)) {
-      dispatch(fetchOffersForRequest(requestId))
-      toast.success('Offer submitted', { description: 'An administrator reviews it next.' })
-    }
+
+    // Every one of these reports failure into the slice's error, which the page already
+    // shows above.
+    if (result.type.endsWith('/rejected')) return
+    dispatch(fetchOffersForRequest(requestId))
+    toast.success(mine ? 'Offer updated' : 'Offer submitted', {
+      description: 'An administrator reviews it next.',
+    })
+  }
+
+  async function withdraw() {
+    setSaving(true)
+    const result = await dispatch(cancelOffer(mine!.offerId!))
+    setSaving(false)
+    if (result.type.endsWith('/rejected')) return
+    dispatch(fetchOffersForRequest(requestId))
+    toast.success('Offer withdrawn', {
+      description: 'You can answer this request again whenever you like.',
+    })
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Make an offer</CardTitle>
+        <CardTitle>{mine ? 'Your offer' : 'Make an offer'}</CardTitle>
         <CardDescription>
-          An administrator reviews every offer. Contact details are released only if yours is
-          approved.
+          {mine
+            ? editable
+              ? 'You have answered this request. Change the terms here — bidding twice on the same demand is one offer changed, not two.'
+              : 'This offer has been approved, so its terms are fixed: contact details were released against exactly these.'
+            : 'An administrator reviews every offer. Contact details are released only if yours is approved.'}
+          {!mine &&
+            !hasBuyers &&
+            ' Nobody has joined this request yet, so there are no contacts to release until somebody does.'}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -372,6 +451,7 @@ function OfferForm({ requestId }: { requestId: string }) {
                   min={1}
                   value={form.availableQuantity}
                   onChange={set('availableQuantity')}
+                  disabled={!editable}
                 />
               </Field>
               <Field>
@@ -380,6 +460,7 @@ function OfferForm({ requestId }: { requestId: string }) {
                   id="pricePerUnit"
                   value={form.pricePerUnit}
                   onChange={set('pricePerUnit')}
+                  disabled={!editable}
                   required
                 />
               </Field>
@@ -390,6 +471,7 @@ function OfferForm({ requestId }: { requestId: string }) {
                   value={form.currency}
                   onChange={set('currency')}
                   maxLength={3}
+                  disabled={!editable}
                   required
                 />
               </Field>
@@ -402,18 +484,28 @@ function OfferForm({ requestId }: { requestId: string }) {
                 value={form.description}
                 onChange={set('description')}
                 rows={2}
+                disabled={!editable}
               />
               <FieldDescription>
                 What the buyers get for that price — lead time, condition, warranty.
               </FieldDescription>
             </Field>
 
-            <div>
-              <Button type="submit" disabled={saving}>
-                {saving && <Spinner />}
-                Submit offer
-              </Button>
-            </div>
+            {editable && (
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="submit" disabled={saving}>
+                  {saving && <Spinner />}
+                  {mine ? 'Update offer' : 'Submit offer'}
+                </Button>
+                {/* Withdrawing is the way back to a clean slate on this request: the
+                    offer survives as a record, and the seller may answer again. */}
+                {mine && (
+                  <Button type="button" variant="ghost" disabled={saving} onClick={withdraw}>
+                    Withdraw offer
+                  </Button>
+                )}
+              </div>
+            )}
           </FieldGroup>
         </form>
       </CardContent>

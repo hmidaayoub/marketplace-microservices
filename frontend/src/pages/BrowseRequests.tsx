@@ -1,7 +1,7 @@
 /** Open demand. Any authenticated role may browse - that is how a seller finds work. */
 
 import { useEffect, useState } from 'react'
-import { LogInIcon, PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
+import { HandshakeIcon, LogInIcon, PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
@@ -32,8 +32,10 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
+import { Textarea } from '@/components/ui/textarea'
 import type { PurchaseRequest, RequestStatus } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
+import { createOffer } from '@/store/offersSlice'
 import {
   createRequest,
   fetchRequests,
@@ -79,6 +81,7 @@ export default function BrowseRequests() {
         description="Every request buyers have pooled. Sellers bid against the combined total, not one buyer's quantity."
       >
         {role === 'CUSTOMER' && <NewRequestDialog />}
+        {role === 'SELLER' && <OfferOnANewItemDialog />}
 
         {/* Anyone may look; posting needs an account. The button is offered rather than
             hidden, because "you cannot do this yet" is more useful than a missing
@@ -156,7 +159,9 @@ export default function BrowseRequests() {
             </EmptyMedia>
             <EmptyTitle>Nothing matches those filters</EmptyTitle>
             <EmptyDescription>
-              Try a different search, or widen the status filter to any.
+              {role === 'SELLER'
+                ? 'Try a different search, or widen the status filter to any. If nobody has asked for what you sell, offer on it anyway — the request opens with no buyers and they join it.'
+                : 'Try a different search, or widen the status filter to any.'}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -207,6 +212,281 @@ function RequestCard({ request }: { request: PurchaseRequest }) {
         </CardContent>
       </Card>
     </Link>
+  )
+}
+
+/**
+ * A seller offering on something nobody has asked for yet.
+ *
+ * Demand and supply do not have to arrive in that order. Naming the item is enough: the
+ * request is opened as part of submitting the offer, with no buyers on it, and the offer
+ * is what it carries until the first one joins.
+ *
+ * The suggestions matter more here than they do for a customer. The platform matches
+ * item names exactly, so a seller who types "Espresso Machine Pro" while buyers have
+ * pooled behind "Espresso Machine" opens a second request and bids against nobody -
+ * which is the split the whole arrangement exists to avoid. So a near match is put in
+ * front of them, with the request it names to go and offer against instead.
+ */
+function OfferOnANewItemDialog() {
+  const navigate = useNavigate()
+  const dispatch = useAppDispatch()
+  const similar = useAppSelector((s) => s.requests.similar)
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [form, setForm] = useState({
+    itemName: '',
+    category: '',
+    itemDescription: '',
+    availableQuantity: 1,
+    pricePerUnit: '0.00',
+    currency: 'EUR',
+    description: '',
+  })
+
+  // An existing request for this exact item is not a suggestion but an answer: the offer
+  // would land on it anyway, and the request page is where its demand can be read first.
+  const exactMatch = similar.find((request) => request.exact)
+
+  const set = (key: keyof typeof form) => (event: { target: { value: string } }) => {
+    setFormError(null)
+    setForm((f) => ({
+      ...f,
+      [key]: key === 'availableQuantity' ? Number(event.target.value) : event.target.value,
+    }))
+  }
+
+  // The same lookup, debounce and floor the new-request form uses: below three
+  // characters everything looks like everything.
+  useEffect(() => {
+    const itemName = form.itemName.trim()
+    if (!open || itemName.length < 3) {
+      dispatch(similarCleared())
+      return
+    }
+    const id = setTimeout(() => void dispatch(fetchSimilarRequests(itemName)), 250)
+    return () => clearTimeout(id)
+  }, [dispatch, form.itemName, open])
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setFormError(null)
+    const result = await dispatch(
+      createOffer({
+        item: {
+          itemName: form.itemName,
+          description: form.itemDescription,
+          category: form.category,
+        },
+        availableQuantity: form.availableQuantity,
+        pricePerUnit: form.pricePerUnit,
+        currency: form.currency,
+        description: form.description,
+      }),
+    )
+    setSaving(false)
+
+    if (!createOffer.fulfilled.match(result)) {
+      // A seller answers a request once. If this item turned out to have a request they
+      // have already offered on, there is nothing to submit here - only the offer they
+      // already made, on the page that can change it.
+      const existing = result.payload?.existing
+      if (existing) {
+        dispatch(similarCleared())
+        setOpen(false)
+        navigate(`/requests/${existing.requestId}`)
+        toast.info('You have already offered on this item', {
+          description: 'Your offer is below — change its terms there rather than making a second.',
+        })
+        return
+      }
+      setFormError(result.payload?.message ?? 'Could not submit offer')
+      return
+    }
+
+    dispatch(similarCleared())
+    setOpen(false)
+    // Onto the request the offer landed on - which may be one that already existed, since
+    // the service will not open a second one for an item that already has demand. Showing
+    // it is how the seller finds out which of the two happened.
+    navigate(`/requests/${result.payload.requestId}`)
+    toast.success('Offer submitted', {
+      description: `An administrator reviews it next. Buyers can now join the request for ${form.itemName}.`,
+    })
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) dispatch(similarCleared())
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button size="lg">
+          <HandshakeIcon />
+          Offer on a new item
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Offer on a new item</DialogTitle>
+          <DialogDescription>
+            For stock nobody has asked for yet. The request opens with no buyers on it and your
+            offer is what it carries — buyers join it afterwards, and an administrator reviews
+            the offer as usual.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={submit}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="offerItemName">Item</FieldLabel>
+              <Input
+                id="offerItemName"
+                value={form.itemName}
+                onChange={set('itemName')}
+                placeholder="Espresso Machine"
+                required
+              />
+              <FieldDescription>
+                The name is what pools the demand. If buyers are already asking for this item,
+                your offer joins their request rather than opening a second one.
+              </FieldDescription>
+            </Field>
+
+            {/* Demand that already exists for what is being typed. Only exact names pool
+                automatically, so a close one is the seller's own call - and it is worth
+                making: an item buyers have already gathered behind is a better thing to
+                bid on than one waiting for its first. */}
+            {similar.length > 0 && (
+              <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <SearchIcon className="size-4" />
+                  {exactMatch
+                    ? 'This item already has a request'
+                    : `${similar.length === 1 ? 'One request looks' : `${similar.length} requests look`} like this`}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {exactMatch
+                    ? 'Your offer would land on it. Open it to read the demand first.'
+                    : 'A name that is merely close opens a separate request, and you would be bidding against nobody. If one of these is the same product, offer against it instead.'}
+                </p>
+                <ul className="space-y-1.5">
+                  {similar.map((request) => (
+                    <li
+                      key={request.requestId}
+                      className="flex items-center gap-3 rounded-md bg-background p-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{request.itemName}</p>
+                        <p className="text-xs text-muted-foreground tabular-nums">
+                          {request.totalCustomers} buyers · {request.totalQuantity} units
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setOpen(false)
+                          dispatch(similarCleared())
+                          navigate(`/requests/${request.requestId!}`)
+                        }}
+                      >
+                        Offer on this
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="offerItemCategory">Category</FieldLabel>
+                <Input
+                  id="offerItemCategory"
+                  value={form.category}
+                  onChange={set('category')}
+                  placeholder="Kitchen"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="offerItemQuantity">Units you can supply</FieldLabel>
+                <Input
+                  id="offerItemQuantity"
+                  type="number"
+                  min={1}
+                  value={form.availableQuantity}
+                  onChange={set('availableQuantity')}
+                  required
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="offerItemPrice">Price per unit</FieldLabel>
+                <Input
+                  id="offerItemPrice"
+                  value={form.pricePerUnit}
+                  onChange={set('pricePerUnit')}
+                  required
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="offerItemCurrency">Currency</FieldLabel>
+                <Input
+                  id="offerItemCurrency"
+                  value={form.currency}
+                  onChange={set('currency')}
+                  maxLength={3}
+                  required
+                />
+              </Field>
+            </div>
+
+            <Field>
+              <FieldLabel htmlFor="offerItemDescription">What the item is</FieldLabel>
+              <Textarea
+                id="offerItemDescription"
+                value={form.itemDescription}
+                onChange={set('itemDescription')}
+                rows={2}
+              />
+              <FieldDescription>
+                Shown on the request itself, so buyers can tell whether it is what they want.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="offerItemNotes">Notes on your offer</FieldLabel>
+              <Textarea
+                id="offerItemNotes"
+                value={form.description}
+                onChange={set('description')}
+                rows={2}
+              />
+              <FieldDescription>
+                What the buyers get for that price — lead time, condition, warranty.
+              </FieldDescription>
+            </Field>
+
+            <ErrorAlert title="Could not submit this offer">{formError}</ErrorAlert>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving} variant={exactMatch ? 'outline' : 'default'}>
+                {saving && <Spinner />}
+                Submit offer
+              </Button>
+            </DialogFooter>
+          </FieldGroup>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -343,7 +623,7 @@ function NewRequestDialog() {
                   <SearchIcon className="size-4" />
                   {exactMatch
                     ? 'A request for this item already exists'
-                    : `${similar.length === 1 ? 'One open request looks' : `${similar.length} open requests look`} like this`}
+                    : `${similar.length === 1 ? 'One request looks' : `${similar.length} requests look`} like this`}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {exactMatch
@@ -359,7 +639,9 @@ function NewRequestDialog() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{request.itemName}</p>
                         <p className="text-xs text-muted-foreground tabular-nums">
-                          {request.totalCustomers} buyers · {request.totalQuantity} units
+                          {request.totalCustomers === 0
+                            ? 'No buyers yet — a seller is offering on it'
+                            : `${request.totalCustomers} buyers · ${request.totalQuantity} units`}
                         </p>
                       </div>
                       <Button type="button" size="sm" disabled={saving} onClick={() => join(request)}>

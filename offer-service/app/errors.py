@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.clients import RequestMissing, SellerProfileMissing, UpstreamUnavailable
 from app.service import (
     NotOfferOwner,
+    OfferAlreadyMade,
     OfferNotFound,
     OfferNotPending,
 )
@@ -50,6 +51,23 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def not_pending(*_: object) -> JSONResponse:
         return error_response(
             status.HTTP_409_CONFLICT, "Offer is no longer pending and can no longer be changed"
+        )
+
+    @app.exception_handler(OfferAlreadyMade)
+    async def already_offered(_: Request, exc: OfferAlreadyMade) -> JSONResponse:
+        # Carries the offer, the way request-service's duplicate-name refusal carries the
+        # request: refusing without saying what to change instead leaves the caller
+        # nowhere to go. The full projection, because it is the seller's own offer.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "message": (
+                    "You already have an offer on this request. Answering the same demand "
+                    "twice is one offer changed, not two - update that one instead."
+                ),
+                "status": status.HTTP_409_CONFLICT,
+                "existing": exc.existing.model_dump(by_alias=True, mode="json"),
+            },
         )
 
     @app.exception_handler(RequestMissing)
@@ -100,5 +118,7 @@ def _first_validation_message(exc: RequestValidationError) -> str:
     if kind == "path":
         return f"Invalid value for parameter '{field}'" if field else "Invalid path parameter"
 
-    message = first.get("msg", "is invalid")
+    # Pydantic prefixes anything a validator raises with "Value error, ". That names the
+    # exception class it caught, which is Pydantic's business and not the caller's.
+    message = first.get("msg", "is invalid").removeprefix("Value error, ")
     return f"{field}: {message}" if field else message

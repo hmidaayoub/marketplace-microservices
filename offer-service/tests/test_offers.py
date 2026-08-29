@@ -114,6 +114,332 @@ async def test_submit_offer_allowed_while_other_offers_pending(
     assert response.status_code == 201
 
 
+# --- one live offer per seller per request ------------------------------------------
+#
+# Answering the same demand twice is one proposal changed, not two. The second submission
+# is refused and handed the first, which is what PUT /api/offers/{offerId} is for.
+
+
+async def test_second_offer_on_the_same_request_is_refused(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    first = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        "/api/offers", json=_body(request_id, pricePerUnit="19.00"), headers=auth(token)
+    )
+
+    assert second.status_code == 409, second.text
+    body = second.json()
+    # Refusing without saying what to change instead leaves the seller nowhere to go.
+    assert body["existing"]["offerId"] == first.json()["offerId"]
+    assert "update" in body["message"].lower()
+
+    # And nothing was stored: the seller still has exactly one offer, on the old terms.
+    mine = (await client.get("/api/offers/me", headers=auth(token))).json()
+    assert len(mine) == 1
+    assert mine[0]["pricePerUnit"] == "24.50"
+
+
+async def test_the_offer_it_points_at_can_be_updated(client: AsyncClient, upstream: FakeUpstream):
+    """Which is the whole point of the refusal - the seller changes their terms through
+    the offer they already have."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    offer_id = created.json()["offerId"]
+
+    updated = await client.put(
+        f"/api/offers/{offer_id}",
+        json={
+            "availableQuantity": 20,
+            "pricePerUnit": "19.00",
+            "currency": "EUR",
+            "description": "Better price",
+        },
+        headers=auth(token),
+    )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["pricePerUnit"] == "19.00"
+
+
+async def test_another_seller_may_still_offer_on_the_same_request(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """The rule is about one seller repeating themselves, not about the demand. Several
+    sellers competing on the same request is the market working."""
+    _, _, first_token = await _seller(client, upstream)
+    _, _, second_token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    first = await client.post("/api/offers", json=_body(request_id), headers=auth(first_token))
+    second = await client.post("/api/offers", json=_body(request_id), headers=auth(second_token))
+
+    assert (first.status_code, second.status_code) == (201, 201), (first.text, second.text)
+
+
+async def test_the_same_seller_may_offer_on_a_different_request(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    _, _, token = await _seller(client, upstream)
+    one = await _open_request(upstream)
+    two = await _open_request(upstream)
+
+    first = await client.post("/api/offers", json=_body(one), headers=auth(token))
+    second = await client.post("/api/offers", json=_body(two), headers=auth(token))
+
+    assert (first.status_code, second.status_code) == (201, 201), (first.text, second.text)
+
+
+async def test_offering_again_after_cancelling_is_allowed(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """A cancelled offer is a record of a proposal that no longer stands, and it cannot be
+    updated - so counting it would leave the seller unable to offer and unable to update."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    cancelled = await client.delete(
+        f"/api/offers/{created.json()['offerId']}", headers=auth(token)
+    )
+    assert cancelled.status_code == 204, cancelled.text
+
+    again = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+
+    assert again.status_code == 201, again.text
+    assert again.json()["offerId"] != created.json()["offerId"]
+
+
+async def test_offering_again_after_rejection_is_allowed(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Same reasoning: a rejected offer is frozen, so the only way for the seller to
+    answer the admin is a fresh one."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    decided = await client.patch(
+        f"/internal/offers/{created.json()['offerId']}/status",
+        json={"status": "REJECTED"},
+        headers=internal_headers(),
+    )
+    assert decided.status_code == 200, decided.text
+
+    again = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+
+    assert again.status_code == 201, again.text
+
+
+async def test_an_approved_offer_still_blocks_a_second_one(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """An approved offer is a proposal that stands - contact permission may already have
+    been granted against exactly its terms - so it is not something to bid alongside."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    await client.patch(
+        f"/internal/offers/{created.json()['offerId']}/status",
+        json={"status": "APPROVED"},
+        headers=internal_headers(),
+    )
+
+    again = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+
+    assert again.status_code == 409, again.text
+    assert again.json()["existing"]["status"] == "APPROVED"
+
+
+async def test_offering_twice_on_an_item_is_the_same_refusal(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """The item path resolves to a request before anything is stored, so it meets the
+    same rule - a seller cannot get two offers onto one request by naming the item twice."""
+    _, _, token = await _seller(client, upstream)
+
+    first = await client.post("/api/offers", json=_item_body("Drone"), headers=auth(token))
+    second = await client.post("/api/offers", json=_item_body("drone"), headers=auth(token))
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 409, second.text
+    assert second.json()["existing"]["offerId"] == first.json()["offerId"]
+
+
+# --- offering against an item no request carries yet --------------------------------
+#
+# Demand and supply do not have to arrive in that order. A seller holding stock nobody
+# has asked for names the item instead of a request, and request-service opens one with
+# no buyers on it - the offer is what it carries until the first buyer joins.
+
+
+def _item_body(item_name: str, **overrides) -> dict:
+    payload = {
+        "item": {"itemName": item_name, "description": "Sealed", "category": "kitchen"},
+        "availableQuantity": 40,
+        "pricePerUnit": "210.00",
+        "currency": "EUR",
+        "description": "Ships from Lyon",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def test_submit_offer_for_an_item_opens_the_request_it_needs(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    _, seller_id, token = await _seller(client, upstream)
+
+    response = await client.post(
+        "/api/offers", json=_item_body("Espresso Machine"), headers=auth(token)
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["sellerId"] == str(seller_id)
+    # The offer is against a real request either way - which is R5. What changed is only
+    # that the seller did not have to wait for somebody else to open it.
+    assert body["requestId"] == str(upstream.requests_by_item["espresso machine"])
+    assert body["status"] == "PENDING"
+
+    assert upstream.opened_items == [
+        {"itemName": "Espresso Machine", "description": "Sealed", "category": "kitchen"}
+    ]
+
+
+async def test_submit_offer_for_an_item_that_already_has_a_request_joins_it(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Two requests for one item would split the total the platform exists to pool, so
+    the offer lands on the demand that is already there."""
+    _, _, token = await _seller(client, upstream)
+    existing = uuid.uuid4()
+    upstream.add_request(existing, "OPEN", item_name="Espresso Machine")
+
+    response = await client.post(
+        "/api/offers", json=_item_body("espresso machine"), headers=auth(token)
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["requestId"] == str(existing)
+
+
+async def test_two_offers_for_the_same_item_land_on_one_request(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Including when it is the first seller's own offer that opened it. Rival sellers
+    bidding on the same product are competing on one request, as they would be if a
+    customer had opened it."""
+    _, _, first = await _seller(client, upstream)
+    _, _, second = await _seller(client, upstream)
+
+    one = await client.post("/api/offers", json=_item_body("Drone"), headers=auth(first))
+    two = await client.post("/api/offers", json=_item_body("Drone"), headers=auth(second))
+
+    assert (one.status_code, two.status_code) == (201, 201), (one.text, two.text)
+    assert one.json()["requestId"] == two.json()["requestId"]
+
+
+async def test_submit_offer_for_an_item_notifies_the_admins(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """An offer is an offer whichever way its request came about: it is PENDING, and the
+    admins who review it are told."""
+    _, _, token = await _seller(client, upstream)
+    admin = uuid.uuid4()
+    upstream.add_admin(admin)
+
+    response = await client.post(
+        "/api/offers", json=_item_body("Espresso Machine"), headers=auth(token)
+    )
+    assert response.status_code == 201, response.text
+
+    assert await client.relay.drain() == 1
+    routing_key, notifications = client.relay.publisher.published[0]
+    assert routing_key == "offer.created"
+    assert [n["userId"] for n in notifications] == [str(admin)]
+
+
+async def test_submit_offer_names_the_demand_exactly_one_way(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """Both would be two answers to one question, neither leaves the offer attached to
+    anything. The service asks rather than picking one."""
+    _, _, token = await _seller(client, upstream)
+    request_id = await _open_request(upstream)
+
+    both = await client.post(
+        "/api/offers",
+        json=_body(request_id, item={"itemName": "Espresso Machine"}),
+        headers=auth(token),
+    )
+    neither = await client.post(
+        "/api/offers",
+        json={"availableQuantity": 10, "pricePerUnit": "24.50", "currency": "EUR"},
+        headers=auth(token),
+    )
+
+    for response in (both, neither):
+        assert response.status_code == 400, response.text
+        assert "requestId" in response.json()["message"]
+        assert "item" in response.json()["message"]
+
+    # Nothing was opened on the way to being refused.
+    assert upstream.opened_items == []
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {"itemName": ""},
+        {"itemName": "   "},
+        {"itemName": "x" * 201},
+        {"itemName": "Espresso Machine", "sellerId": "smuggled"},
+        {},
+    ],
+)
+async def test_submit_offer_rejects_an_unusable_item(
+    client: AsyncClient, upstream: FakeUpstream, item: dict
+):
+    """The same name rules a customer's request is held to. A name this service would
+    accept and request-service would refuse is a 500 waiting to happen."""
+    _, _, token = await _seller(client, upstream)
+
+    response = await client.post(
+        "/api/offers", json=_item_body("unused", item=item), headers=auth(token)
+    )
+
+    assert response.status_code == 400, response.text
+    assert upstream.opened_items == []
+
+
+async def test_submit_offer_for_an_item_reports_request_service_being_down(
+    client: AsyncClient, upstream: FakeUpstream
+):
+    """503, not 500: nothing was stored and the seller can try again. Opening the request
+    is a network call like resolving one, and it fails the same way."""
+    _, _, token = await _seller(client, upstream)
+    upstream.request_service_down = True
+
+    response = await client.post(
+        "/api/offers", json=_item_body("Espresso Machine"), headers=auth(token)
+    )
+
+    assert response.status_code == 503
+    assert "dependency" in response.json()["message"].lower()
+
+    listed = await client.get("/api/offers/me", headers=auth(token))
+    assert listed.json() == [], "an offer survived a request that was never opened"
+
+
 async def test_submit_offer_sends_internal_api_key(client: AsyncClient, upstream: FakeUpstream):
     _, _, token = await _seller(client, upstream)
     request_id = await _open_request(upstream)
@@ -380,10 +706,13 @@ async def test_internal_endpoints_reject_a_user_jwt(client: AsyncClient, upstrea
 
 async def test_pending_queue_lists_only_pending(client: AsyncClient, upstream: FakeUpstream):
     _, _, token = await _seller(client, upstream)
-    request_id = await _open_request(upstream)
+    # Two requests rather than two offers on one: a seller answers a request once, so
+    # the cancelled offer and the pending one have to be against different demand.
+    cancelled_on = await _open_request(upstream)
+    pending_on = await _open_request(upstream)
 
-    first = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
-    await client.post("/api/offers", json=_body(request_id), headers=auth(token))
+    first = await client.post("/api/offers", json=_body(cancelled_on), headers=auth(token))
+    await client.post("/api/offers", json=_body(pending_on), headers=auth(token))
     await client.delete(f"/api/offers/{first.json()['offerId']}", headers=auth(token))
 
     response = await client.get("/internal/offers/pending", headers=internal_headers())

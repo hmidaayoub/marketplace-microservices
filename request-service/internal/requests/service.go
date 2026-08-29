@@ -26,6 +26,11 @@ import (
 // only the spelling to go on, so those are put to the customer as suggestions and
 // decided by them. The same name is not a judgement - it is the state the platform
 // exists to prevent, and there is nothing for a second request to add.
+//
+// The request it carries may have no buyers on it - one a seller opened by offering
+// against the item, or one everybody has left. That is still the request to join rather
+// than one to duplicate: a join is what makes it demand again, and it may already have
+// offers waiting on it.
 type RequestExistsError struct {
 	Existing store.PurchaseRequest
 }
@@ -98,6 +103,14 @@ type CreateInput struct {
 	ActorUserID uuid.UUID
 }
 
+// EnsureInput describes an item to find or open a request for. There is no quantity:
+// nobody is being enrolled, which is the whole difference from CreateInput.
+type EnsureInput struct {
+	ItemName    string
+	Description string
+	Category    string
+}
+
 type ListFilter struct {
 	ItemName string
 	Category string
@@ -110,16 +123,20 @@ type ListFilter struct {
 // transaction. R1 and R3 travel together: a customer creates a request because they
 // want some quantity of the item, so a request never exists with nobody wanting it.
 //
-// Except when that item is already open demand. Two requests for "Espresso Machine"
+// Except when that item already has a request. Two requests for "Espresso Machine"
 // split the number a seller bids against, which is the number the whole platform exists
 // to build, so there is nothing for the second one to create - it is refused and handed
 // the request that exists. Joining it is then the customer's own call, made through the
 // participants endpoint: being quietly enrolled in a stranger's request because a name
 // collided is not what anybody asked for.
 //
+// That holds whether or not anyone is on it. A request with no buyers is the one a join
+// helps most - it is how the item becomes demand again - and it may already carry a
+// seller's offer waiting for buyers to arrive.
+//
 // A merely similar name is not refused. Whether "Espresso Machine Pro" is the same
 // product is a judgement this has only the spelling to make, so those reach the customer
-// as suggestions while they type - see SimilarOpen - and they decide.
+// as suggestions while they type - see Similar - and they decide.
 func (s *Service) Create(
 	ctx context.Context, customerID uuid.UUID, in CreateInput,
 ) (store.PurchaseRequest, error) {
@@ -133,7 +150,7 @@ func (s *Service) Create(
 			return fmt.Errorf("locking item name: %w", err)
 		}
 
-		existing, err := q.FindOpenRequestByItemName(ctx, in.ItemName)
+		existing, err := q.FindRequestByItemName(ctx, in.ItemName)
 		switch {
 		case err == nil:
 			return s.refuseExisting(ctx, q, existing, customerID)
@@ -182,6 +199,76 @@ func (s *Service) Create(
 	return created, err
 }
 
+// EnsureForItem returns the request an item is carried by, opening one with nobody on it
+// if there is none. It reports whether it had to create it.
+//
+// This is what lets a seller offer against an item nobody has asked for yet. Demand and
+// supply do not have to arrive in that order: a seller who already holds the stock is
+// worth letting speak first, and the request their offer needs is the thing that gives
+// buyers somewhere to arrive. Such a request is INACTIVE, which is not a special case -
+// INACTIVE is exactly what "no participants" is called, the same state a request reaches
+// when its last customer leaves, and the same join revives either.
+//
+// It creates nothing when the item already has a request, for the same reason Create
+// refuses one: two requests for the same item split the total the platform exists to
+// pool. The seller's offer joins whatever demand is already there instead.
+//
+// No owner and no participants, so:
+//   - created_by stays NULL. A seller is not a customer, cannot join, and must not be
+//     recorded as the buyer who wanted this.
+//   - no REQUEST_JOINED event. Nobody joined, and the seller learns the outcome in the
+//     response to the offer they were making.
+func (s *Service) EnsureForItem(
+	ctx context.Context, in EnsureInput,
+) (store.PurchaseRequest, bool, error) {
+	var (
+		request store.PurchaseRequest
+		created bool
+	)
+
+	err := s.inTx(ctx, func(q *store.Queries, tx pgx.Tx) error {
+		// The same lock Create takes, and it has to be the same one: a customer naming
+		// an item at the instant a seller offers against it would otherwise have both
+		// find nothing and both create a request for it.
+		if err := q.LockItemName(ctx, in.ItemName); err != nil {
+			return fmt.Errorf("locking item name: %w", err)
+		}
+
+		existing, err := q.FindRequestByItemName(ctx, in.ItemName)
+		switch {
+		case err == nil:
+			request = existing
+			return nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("looking for a request for the same item: %w", err)
+		}
+
+		opened, err := q.CreateRequest(ctx, store.CreateRequestParams{
+			ItemName:    in.ItemName,
+			Description: in.Description,
+			Category:    in.Category,
+			// Left NULL deliberately - see the note above, and 000003, which made the
+			// column nullable for exactly the case of a request with no buyer behind it.
+			CreatedBy: pgtype.UUID{},
+		})
+		if err != nil {
+			return fmt.Errorf("creating request: %w", err)
+		}
+
+		// Not skipped just because the answer is known: the status is derived from the
+		// participant count by one query, and letting this path write 'INACTIVE' itself
+		// would be a second place that decides it.
+		request, err = q.RecalculateDemand(ctx, opened.RequestID)
+		if err != nil {
+			return fmt.Errorf("recalculating demand: %w", err)
+		}
+		created = true
+		return nil
+	})
+
+	return request, created, err
+}
+
 // refuseExisting turns a name collision into the right refusal. A caller who is already
 // in that request is told so plainly - "join this instead" is no use to somebody who
 // already has - and everyone else is handed it to join.
@@ -201,11 +288,15 @@ func (s *Service) refuseExisting(
 	return &RequestExistsError{Existing: existing}
 }
 
-// SimilarOpen backs the suggestions a customer sees while typing an item name. It is a
-// plain read of open demand - the same projection browsing already serves - so it needs
-// no token and takes no lock.
-func (s *Service) SimilarOpen(ctx context.Context, itemName string, minScore float32) ([]store.FindSimilarOpenRequestsRow, error) {
-	return s.queries.FindSimilarOpenRequests(ctx, store.FindSimilarOpenRequestsParams{
+// Similar backs the suggestions a customer sees while typing an item name. It is a
+// plain read - the same projection browsing already serves - so it needs no token and
+// takes no lock.
+//
+// Requests with nobody on them are included, and each row carries its status. One of
+// those is often the most useful thing to suggest: an item a seller has already offered
+// against is waiting for its first buyer, and joining is what makes it demand.
+func (s *Service) Similar(ctx context.Context, itemName string, minScore float32) ([]store.FindSimilarRequestsRow, error) {
+	return s.queries.FindSimilarRequests(ctx, store.FindSimilarRequestsParams{
 		ItemName:    itemName,
 		MinScore:    minScore,
 		ResultLimit: maxSimilar,

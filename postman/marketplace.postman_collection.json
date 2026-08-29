@@ -1244,7 +1244,7 @@
               }
             ],
             "url": "{{gatewayUrl}}/api/offers",
-            "description": "R5: an offer only makes sense against demand that exists.",
+            "description": "A requestId names demand that is supposed to exist, so an unknown one is a mistake, not an invitation to invent a request - there is no item name in this body to open one with. Naming the item instead is the other request below.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"requestId\": \"11111111-1111-1111-1111-111111111111\",\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\"\n}"
@@ -1257,6 +1257,176 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"not found\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offer on an item no request carries yet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/api/offers",
+            "description": "The other half of R5. Demand and supply do not have to arrive in that order: a seller names the item instead of a request, and request-service opens one with no buyers on it for the offer to hang on. Buyers join it afterwards.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"item\": {\n    \"itemName\": \"Cold Brew Tower\",\n    \"description\": \"Twelve litre, glass\",\n    \"category\": \"kitchen\"\n  },\n  \"availableQuantity\": 40,\n  \"pricePerUnit\": \"210.00\",\n  \"currency\": \"EUR\",\n  \"description\": \"Ships from Lyon\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"sellerOpenedRequestId\", b.requestId);",
+                  "pm.test(\"starts PENDING like any other offer\", () => pm.expect(b.status).to.eql(\"PENDING\"));",
+                  "pm.test(\"is against a real request\", () => pm.expect(b.requestId).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The request it opened has no buyers on it",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/api/requests/{{sellerOpenedRequestId}}",
+            "description": "INACTIVE with nobody on it, which is what a request with no participants is - the same state one reaches when its last buyer leaves. A join revives it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"ok\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"nobody is on it\", () => pm.expect(b.totalCustomers).to.eql(0));",
+                  "pm.test(\"so it reads INACTIVE\", () => pm.expect(b.status).to.eql(\"INACTIVE\"));",
+                  "pm.test(\"and it has no owner - no buyer asked for it\", () =>",
+                  "    pm.expect(b.createdBy).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A second offer on the same item lands on that one request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/api/offers",
+            "description": "Find-or-create, not create. Two requests for one item would split the total the platform exists to pool, so the rival offer competes on the request already there.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"item\": {\n    \"itemName\": \"cold-brew TOWER\"\n  },\n  \"availableQuantity\": 12,\n  \"pricePerUnit\": \"199.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"on the request that already existed, however the name was typed\", () =>",
+                  "    pm.expect(pm.response.json().requestId).to.eql(",
+                  "        pm.collectionVariables.get(\"sellerOpenedRequestId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A customer naming that item is handed the seller's request -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/api/requests",
+            "description": "Which is what keeps the seller's offer from being orphaned: the first buyer to want the item joins the request the offer is on instead of opening a rival one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"itemName\": \"Cold Brew Tower\",\n  \"quantity\": 2\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"refused\", () => pm.response.to.have.status(409));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"and handed the seller's request to join\", () =>",
+                  "    pm.expect(b.existing.requestId).to.eql(",
+                  "        pm.collectionVariables.get(\"sellerOpenedRequestId\")));",
+                  "pm.test(\"said in the terms of a request nobody is on\", () =>",
+                  "    pm.expect(b.message).to.include(\"nobody on it\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Naming both a requestId and an item -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/api/offers",
+            "description": "Two answers to one question. The service asks rather than picking one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"item\": {\n    \"itemName\": \"Cold Brew Tower\"\n  },\n  \"availableQuantity\": 1,\n  \"pricePerUnit\": \"1.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected\", () => pm.response.to.have.status(400));"
                 ]
               }
             }
@@ -1337,6 +1507,44 @@
                 "exec": [
                   "pm.test(\"ok\", () => pm.response.to.have.status(200));",
                   "pm.test(\"returns a list\", () => pm.expect(pm.response.json()).to.be.an(\"array\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Offering twice on one request -> 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sellerAccessToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/api/offers",
+            "description": "A seller answers a request once. Bidding twice against the same demand is one proposal changed, not two - so the refusal carries the offer that already exists, to be updated instead of duplicated.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"{{requestId}}\",\n  \"availableQuantity\": 3,\n  \"pricePerUnit\": \"99.00\",\n  \"currency\": \"EUR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"refused\", () => pm.response.to.have.status(409));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"and handed the offer to update instead\", () =>",
+                  "    pm.expect(b.existing.offerId).to.eql(pm.collectionVariables.get(\"offerId\")));",
+                  "pm.test(\"which is the seller's own, in full\", () =>",
+                  "    pm.expect(b.existing.sellerId).to.eql(pm.collectionVariables.get(\"sellerId\")));"
                 ]
               }
             }
