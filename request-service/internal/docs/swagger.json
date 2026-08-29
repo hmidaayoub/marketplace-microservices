@@ -60,6 +60,7 @@
                         "type": "string"
                     },
                     "createdBy": {
+                        "description": "The customer who opened the request. Absent when nobody did - a request opened for\na seller offering against an item has no buyer behind it.",
                         "type": "string"
                     },
                     "description": {
@@ -191,7 +192,7 @@
                 ]
             },
             "post": {
-                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.\nIf an open request already carries this item name, nothing is created:\nthe 409 comes back with that request attached, and joining it is the\ncustomer's own call through the participants endpoint. A merely similar\nname is not refused - see /api/requests/similar, which is what the\nnew-request form shows while the name is being typed.",
+                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.\nIf a request already carries this item name, nothing is created: the 409\ncomes back with that request attached, and joining it is the\ncustomer's own call through the participants endpoint. That holds for a\nrequest with no buyers on it too - one a seller opened by offering\nagainst the item, or one everybody has left - because joining is what\nmakes it demand again. A merely similar\nname is not refused - see /api/requests/similar, which is what the\nnew-request form shows while the name is being typed.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -261,7 +262,7 @@
                                 }
                             }
                         },
-                        "description": "Already a participant, or this item is already open demand"
+                        "description": "Already a participant, or this item already has a request"
                     }
                 },
                 "security": [
@@ -325,7 +326,7 @@
         },
         "/api/requests/similar": {
             "get": {
-                "description": "Powers the suggestions a customer sees while naming an item, and is the\nsame match a create is refused on. Open to everyone, signed in or not:\nit returns the browse projection, ranked by similarity.",
+                "description": "Powers the suggestions a customer sees while naming an item, and is the\nsame match a create is refused on. Open to everyone, signed in or not:\nit returns the browse projection, ranked by similarity. Requests with no\nbuyers on them are included and carry their status, because those are\noften the ones most worth joining - a seller may already have offered\nagainst the item.",
                 "parameters": [
                     {
                         "description": "The item name being typed",
@@ -362,7 +363,7 @@
                         "description": "itemName is required"
                     }
                 },
-                "summary": "Find open requests whose item name is close to this one",
+                "summary": "Find requests whose item name is close to this one",
                 "tags": [
                     "requests"
                 ]

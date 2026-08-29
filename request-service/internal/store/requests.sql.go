@@ -91,25 +91,30 @@ func (q *Queries) DeleteParticipant(ctx context.Context, arg DeleteParticipantPa
 	return result.RowsAffected(), nil
 }
 
-const findOpenRequestByItemName = `-- name: FindOpenRequestByItemName :one
+const findRequestByItemName = `-- name: FindRequestByItemName :one
 SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by FROM purchase_request
 WHERE request_item_key(item_name) = request_item_key($1::text)
-  AND status = 'OPEN'
-ORDER BY created_at, request_id
+ORDER BY (status = 'OPEN') DESC, created_at, request_id
 LIMIT 1
 `
 
 // R1 with a twist: a second customer asking for the same item is not new demand, it is
 // more of the demand that already exists - so there is nothing to create, and this is
 // what says so. Names are compared on request_item_key, so "Espresso Machine",
-// "espresso machine " and "Espresso-Machine" are one request; the oldest open one wins.
-// Only OPEN requests match - a closed one cannot be joined, so naming it opens a fresh
-// request.
+// "espresso machine " and "Espresso-Machine" are one request.
+//
+// Every status matches, not just OPEN. INACTIVE is what a request with nobody on it is
+// called - the one a seller opened by offering against an item, and the one whose last
+// participant left - and a join revives either. A second request would have nothing to
+// add to one and would split the demand of the other, so both are found here.
+//
+// OPEN wins when both exist, which only old data can produce: live demand is the better
+// thing to hand a customer, and the oldest breaks any remaining tie.
 //
 // No FOR UPDATE: creating never writes to the request it finds. Joining is a separate
 // call the customer makes for themselves, and that path takes the lock it needs.
-func (q *Queries) FindOpenRequestByItemName(ctx context.Context, itemName string) (PurchaseRequest, error) {
-	row := q.db.QueryRow(ctx, findOpenRequestByItemName, itemName)
+func (q *Queries) FindRequestByItemName(ctx context.Context, itemName string) (PurchaseRequest, error) {
+	row := q.db.QueryRow(ctx, findRequestByItemName, itemName)
 	var i PurchaseRequest
 	err := row.Scan(
 		&i.RequestID,
@@ -126,7 +131,7 @@ func (q *Queries) FindOpenRequestByItemName(ctx context.Context, itemName string
 	return i, err
 }
 
-const findSimilarOpenRequests = `-- name: FindSimilarOpenRequests :many
+const findSimilarRequests = `-- name: FindSimilarRequests :many
 SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by,
        similarity(request_item_key(pr.item_name), request_item_key($1::text)) AS score,
        -- The same name, not merely a close one. Carried so a caller can tell the two
@@ -142,8 +147,7 @@ SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.t
            false
        )::boolean AS contains
 FROM purchase_request pr
-WHERE pr.status = 'OPEN'
-  AND (
+WHERE (
         (request_item_key(pr.item_name) % request_item_key($1::text)
          AND similarity(request_item_key(pr.item_name), request_item_key($1::text)) >= $2::real)
      OR (array_length(request_item_words(pr.item_name), 1) >= 2
@@ -151,17 +155,17 @@ WHERE pr.status = 'OPEN'
      OR (array_length(request_item_words($1::text), 1) >= 2
          AND request_item_words(pr.item_name) @> request_item_words($1::text))
       )
-ORDER BY exact DESC, contains DESC, score DESC, pr.created_at
+ORDER BY exact DESC, contains DESC, score DESC, (pr.status = 'OPEN') DESC, pr.created_at
 LIMIT $3
 `
 
-type FindSimilarOpenRequestsParams struct {
+type FindSimilarRequestsParams struct {
 	ItemName    string
 	MinScore    float32
 	ResultLimit int32
 }
 
-type FindSimilarOpenRequestsRow struct {
+type FindSimilarRequestsRow struct {
 	PurchaseRequest PurchaseRequest
 	Score           float32
 	Exact           bool
@@ -169,6 +173,11 @@ type FindSimilarOpenRequestsRow struct {
 }
 
 // The names an exact match cannot see, by either of the two signals that catch them.
+//
+// Every status is searched, for the same reason the exact match searches every status: a
+// request with no buyers on it is the one most worth suggesting, since joining it is
+// what makes it demand again. The status travels with each row, so a caller can say
+// which it is offering.
 //
 // score is trigram distance on the normalized key, which is what finds a typo. contains
 // is whole-word containment, which is what finds the same product with more said about
@@ -189,15 +198,17 @@ type FindSimilarOpenRequestsRow struct {
 // pins % to. A min_score below 0.3 filters nothing extra - the operator has already
 // dropped those rows - and rows found only by containment are returned whatever they
 // score, which is the point of having a second signal at all.
-func (q *Queries) FindSimilarOpenRequests(ctx context.Context, arg FindSimilarOpenRequestsParams) ([]FindSimilarOpenRequestsRow, error) {
-	rows, err := q.db.Query(ctx, findSimilarOpenRequests, arg.ItemName, arg.MinScore, arg.ResultLimit)
+// Status only breaks a tie: a suggestion with buyers already on it is the better one
+// to offer, but never at the cost of a closer name.
+func (q *Queries) FindSimilarRequests(ctx context.Context, arg FindSimilarRequestsParams) ([]FindSimilarRequestsRow, error) {
+	rows, err := q.db.Query(ctx, findSimilarRequests, arg.ItemName, arg.MinScore, arg.ResultLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []FindSimilarOpenRequestsRow{}
+	items := []FindSimilarRequestsRow{}
 	for rows.Next() {
-		var i FindSimilarOpenRequestsRow
+		var i FindSimilarRequestsRow
 		if err := rows.Scan(
 			&i.PurchaseRequest.RequestID,
 			&i.PurchaseRequest.ItemName,

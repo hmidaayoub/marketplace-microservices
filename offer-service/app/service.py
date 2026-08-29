@@ -5,11 +5,12 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.events import KEY_OFFER_CREATED, enqueue
 from app.models import Offer, OfferStatus
-from app.schemas import OfferCreate, OfferUpdate
+from app.schemas import OfferCreate, OfferOut, OfferUpdate
 
 
 class OfferNotFound(Exception):
@@ -18,6 +19,25 @@ class OfferNotFound(Exception):
 
 class NotOfferOwner(Exception):
     """A seller may only touch their own offer."""
+
+
+class OfferAlreadyMade(Exception):
+    """The seller already has a live offer on this request.
+
+    Answering the same demand twice is one proposal changed, not two - so it carries the
+    offer that already exists, because "you cannot do this" without saying what to do
+    instead leaves the seller nowhere to go. Updating it is PUT /api/offers/{offerId},
+    which is the call this refusal points at.
+
+    It carries the projection rather than the ORM instance on purpose. get_session rolls
+    the session back when a handler raises, which expires every instance loaded from it,
+    and the exception handler that renders this runs after the session has closed - so a
+    live object would be detached and unreadable by the time anyone asked it anything.
+    """
+
+    def __init__(self, existing: Offer):
+        super().__init__("this seller already has a live offer on this request")
+        self.existing = OfferOut.of(existing)
 
 
 class OfferNotPending(Exception):
@@ -29,25 +49,45 @@ class OfferNotPending(Exception):
 # Nothing here refuses an offer on the strength of the request's status. A request is
 # OPEN or INACTIVE and neither ends it, so there is no state in which demand has gone
 # for good and an offer against it is a mistake.
+#
+# What does refuse one is the seller having answered this request already - see
+# OfferAlreadyMade. That is a rule about the seller, not about the demand: other sellers
+# still compete freely on the same request, and an approval does not close the door on
+# the ones who come after.
 
 
 async def create_offer(
     session: AsyncSession,
     seller_id: uuid.UUID,
+    request_id: uuid.UUID,
     payload: OfferCreate,
     admin_user_ids: Sequence[uuid.UUID] = (),
 ) -> Offer:
     """R6: a new offer always starts PENDING. The caller cannot choose otherwise -
     status is not part of OfferCreate at all.
 
+    request_id is passed rather than read off the payload, because the payload may not
+    carry one: a seller who named an item instead had the request resolved - or opened -
+    by request-service on the way in. Either way an offer is stored against a request
+    that exists, which is all this layer needs to be true.
+
+    A seller answers a request once: a second offer against demand they have already bid
+    on is refused with the first one attached, to be updated instead. The read below is
+    what makes that a clear 409 rather than a constraint violation, and the unique index
+    behind it is what makes it true under a race the read cannot see.
+
     The NEW_OFFER event of flow 2 step 7 is written to the outbox in this same
     transaction, so the offer and the promise to tell the admins about it either both
     exist or neither does. admin_user_ids is empty when auth-service could not be
     reached, in which case there is simply nothing to announce.
     """
+    existing = await live_offer_of(session, seller_id, request_id)
+    if existing is not None:
+        raise OfferAlreadyMade(existing)
+
     offer = Offer(
         seller_id=seller_id,
-        request_id=payload.request_id,
+        request_id=request_id,
         available_quantity=payload.available_quantity,
         price_per_unit=payload.price_per_unit,
         currency=payload.currency,
@@ -77,9 +117,37 @@ async def create_offer(
         ],
     )
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # The index, not the read above, is what makes a double offer impossible: two
+        # submissions arriving together would both find nothing and both insert.
+        await session.rollback()
+        existing = await live_offer_of(session, seller_id, request_id)
+        if existing is None:
+            raise
+        raise OfferAlreadyMade(existing) from exc
+
     await session.refresh(offer)
     return offer
+
+
+async def live_offer_of(
+    session: AsyncSession, seller_id: uuid.UUID, request_id: uuid.UUID
+) -> Offer | None:
+    """The seller's standing offer on this request, if they have one.
+
+    Live is PENDING or APPROVED - a proposal that still stands. A cancelled or rejected
+    one is a record of a proposal that does not, and neither can be updated, so treating
+    either as "you already offered" would leave the seller unable to offer and unable to
+    update.
+    """
+    stmt = select(Offer).where(
+        Offer.seller_id == seller_id,
+        Offer.request_id == request_id,
+        Offer.status.in_(OfferStatus.LIVE),
+    )
+    return (await session.scalars(stmt)).first()
 
 
 async def get_offer(session: AsyncSession, offer_id: uuid.UUID) -> Offer:

@@ -3,8 +3,28 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
 import { api, ApiError } from '@/api/client'
-import type { AnyOffer, Offer, OfferCreate } from '@/api/types'
+import type { AnyOffer, Offer, OfferCreate, OfferUpdate } from '@/api/types'
 import type { RootState } from './index'
+
+/**
+ * What a refused create carries back: why, and the offer to change instead.
+ *
+ * A seller answers a request once, so submitting a second offer against demand they
+ * have already bid on is refused with the first one attached - the same shape a refused
+ * request create uses, for the same reason: "you cannot do this" is only half an answer
+ * without what to do instead.
+ */
+interface CreateRejection {
+  message: string
+  existing: Offer | null
+}
+
+function existingIn(error: unknown): Offer | null {
+  if (!(error instanceof ApiError) || typeof error.body !== 'object' || error.body === null)
+    return null
+  const { existing } = error.body as { existing?: Offer }
+  return existing ?? null
+}
 
 interface OffersState {
   mine: Offer[]
@@ -31,12 +51,47 @@ export const fetchOffersForRequest = createAsyncThunk<AnyOffer[], string, { stat
 export const createOffer = createAsyncThunk<
   Offer,
   OfferCreate,
-  { state: RootState; rejectValue: string }
+  { state: RootState; rejectValue: CreateRejection }
 >('offers/create', async (body, { getState, rejectWithValue }) => {
   try {
     return await api<Offer>('/api/offers', { method: 'POST', body, token: tokenOf(getState()) })
   } catch (error) {
-    return rejectWithValue(error instanceof ApiError ? error.message : 'Could not submit offer')
+    return rejectWithValue({
+      message: error instanceof ApiError ? error.message : 'Could not submit offer',
+      existing: existingIn(error),
+    })
+  }
+})
+
+/** Changing the terms of an offer already made. Only a PENDING offer accepts this. */
+export const updateOffer = createAsyncThunk<
+  Offer,
+  { offerId: string; body: OfferUpdate },
+  { state: RootState; rejectValue: string }
+>('offers/update', async ({ offerId, body }, { getState, rejectWithValue }) => {
+  try {
+    return await api<Offer>(`/api/offers/${offerId}`, {
+      method: 'PUT',
+      body,
+      token: tokenOf(getState()),
+    })
+  } catch (error) {
+    return rejectWithValue(error instanceof ApiError ? error.message : 'Could not update offer')
+  }
+})
+
+/** Withdrawing one. A status change, not a delete: the record survives for the audit
+ *  history, and withdrawing frees the seller to offer on that request again. */
+export const cancelOffer = createAsyncThunk<
+  string,
+  string,
+  { state: RootState; rejectValue: string }
+>('offers/cancel', async (offerId, { getState, rejectWithValue }) => {
+  try {
+    await api<void>(`/api/offers/${offerId}`, { method: 'DELETE', token: tokenOf(getState()) })
+    return offerId
+  } catch (error) {
+    return rejectWithValue(error instanceof ApiError ? error.message : 'Could not cancel offer')
   }
 })
 
@@ -60,12 +115,29 @@ const offersSlice = createSlice({
         state.mine.unshift(action.payload)
         state.error = null
       })
+      .addCase(updateOffer.fulfilled, (state, action) => {
+        const replace = (offer: AnyOffer) =>
+          offer.offerId === action.payload.offerId ? action.payload : offer
+        state.mine = state.mine.map(replace) as Offer[]
+        state.forRequest = state.forRequest.map(replace)
+        state.error = null
+      })
+      .addCase(cancelOffer.fulfilled, (state, action) => {
+        // Cancelled offers stay on the record but drop out of what the seller is shown:
+        // there is nothing left to do with one, and it is no longer their answer to
+        // that request.
+        state.mine = state.mine.filter((offer) => offer.offerId !== action.payload)
+        state.forRequest = state.forRequest.filter((offer) => offer.offerId !== action.payload)
+        state.error = null
+      })
       .addMatcher(
-        (action): action is { type: string; payload?: string } =>
+        (action): action is { type: string; payload?: string | CreateRejection } =>
           action.type.startsWith('offers/') && action.type.endsWith('/rejected'),
         (state, action) => {
           state.loading = false
-          state.error = action.payload ?? 'Something went wrong'
+          const payload = action.payload
+          state.error =
+            (typeof payload === 'string' ? payload : payload?.message) ?? 'Something went wrong'
         },
       )
   },

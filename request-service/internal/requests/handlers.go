@@ -14,6 +14,7 @@ import (
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/httpx"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/middleware"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/store"
 )
 
 const (
@@ -41,9 +42,12 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Summary	Create a purchase request
 //	@Description Opens a request other customers can join. The caller becomes its first
 //	@Description participant; the customerId is resolved from the token, never sent.
-//	@Description If an open request already carries this item name, nothing is created:
-//	@Description the 409 comes back with that request attached, and joining it is the
-//	@Description customer's own call through the participants endpoint. A merely similar
+//	@Description If a request already carries this item name, nothing is created: the 409
+//	@Description comes back with that request attached, and joining it is the
+//	@Description customer's own call through the participants endpoint. That holds for a
+//	@Description request with no buyers on it too - one a seller opened by offering
+//	@Description against the item, or one everybody has left - because joining is what
+//	@Description makes it demand again. A merely similar
 //	@Description name is not refused - see /api/requests/similar, which is what the
 //	@Description new-request form shows while the name is being typed.
 //	@Tags		requests
@@ -54,7 +58,7 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Failure	400		{object}	httpx.ErrorBody	"Validation failed"
 //	@Failure	401		{object}	httpx.ErrorBody	"Missing or invalid token"
 //	@Failure	403		{object}	httpx.ErrorBody	"Not a CUSTOMER, or no customer profile"
-//	@Failure	409		{object}	requestExistsBody	"Already a participant, or this item is already open demand"
+//	@Failure	409		{object}	requestExistsBody	"Already a participant, or this item already has a request"
 //	@Security	bearerAuth
 //	@Router		/api/requests [post]
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -89,8 +93,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var exists *RequestExistsError
 	if errors.As(err, &exists) {
 		httpx.JSON(w, http.StatusConflict, requestExistsBody{
-			Message: "An open request for this item already exists, so there is nothing to " +
-				"create. Join it to add your quantity to its demand.",
+			Message:  existsMessage(exists.Existing),
 			Status:   http.StatusConflict,
 			Existing: toResponse(exists.Existing),
 		})
@@ -106,10 +109,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 // Similar handles GET /api/requests/similar.
 //
-//	@Summary	Find open requests whose item name is close to this one
+//	@Summary	Find requests whose item name is close to this one
 //	@Description Powers the suggestions a customer sees while naming an item, and is the
 //	@Description same match a create is refused on. Open to everyone, signed in or not:
-//	@Description it returns the browse projection, ranked by similarity.
+//	@Description it returns the browse projection, ranked by similarity. Requests with no
+//	@Description buyers on them are included and carry their status, because those are
+//	@Description often the ones most worth joining - a seller may already have offered
+//	@Description against the item.
 //	@Tags		requests
 //	@Produce	json
 //	@Param		itemName	query		string	true	"The item name being typed"
@@ -125,7 +131,7 @@ func (h *Handler) Similar(w http.ResponseWriter, r *http.Request) {
 
 	// The floor is the service's to set, not the caller's: a client that could ask for
 	// everything above 0.01 would be handed noise and show it as a duplicate warning.
-	found, err := h.service.SimilarOpen(r.Context(), itemName, SuggestSimilarity)
+	found, err := h.service.Similar(r.Context(), itemName, SuggestSimilarity)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -365,6 +371,44 @@ func (h *Handler) Leave(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// InternalEnsure handles POST /internal/requests: the request for an item, opening one
+// with no buyers if the item has none yet.
+//
+// Internal because it is not a customer action. It exists for offer-service, where a
+// seller offering against an item nobody has requested needs a request for the offer to
+// hang on - see Service.EnsureForItem. Nothing here enrolls anybody, so it takes no
+// quantity and records no owner.
+//
+// 201 when it opened one, 200 when the item already had a request. Both return it: the
+// caller wants the id either way, and which of the two happened is not something it has
+// to branch on.
+func (h *Handler) InternalEnsure(w http.ResponseWriter, r *http.Request) {
+	var body ensureRequestBody
+	if !httpx.DecodeJSON(w, r, &body) {
+		return
+	}
+	if msg := body.validate(); msg != "" {
+		httpx.Error(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	request, created, err := h.service.EnsureForItem(r.Context(), EnsureInput{
+		ItemName:    body.ItemName,
+		Description: body.Description,
+		Category:    body.Category,
+	})
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	httpx.JSON(w, status, toResponse(request))
+}
+
 // InternalGet handles GET /internal/requests/{requestId}, used by other services to
 // validate that a request exists before acting on it.
 func (h *Handler) InternalGet(w http.ResponseWriter, r *http.Request) {
@@ -457,6 +501,20 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		slog.ErrorContext(r.Context(), "unhandled error", "path", r.URL.Path, "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "Internal server error")
 	}
+}
+
+// existsMessage says why there is nothing to create, in the terms of the request that
+// is already there. The two cases want different words: one already has demand to add
+// to, the other has none and is waiting for its first buyer - and telling somebody to
+// "join the open request" when it is empty would read as a mistake.
+func existsMessage(existing store.PurchaseRequest) string {
+	if existing.Status == StatusOpen {
+		return "An open request for this item already exists, so there is nothing to " +
+			"create. Join it to add your quantity to its demand."
+	}
+	return "A request for this item already exists with nobody on it, so there is " +
+		"nothing to create. Join it to add your quantity - that is what makes it open " +
+		"demand again."
 }
 
 // pathUUID answers a malformed id with 400 rather than letting it reach the database -

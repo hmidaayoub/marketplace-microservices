@@ -7,19 +7,59 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import Offer, OfferStatus
 
 CURRENCY_PATTERN = r"^[A-Z]{3}$"
 
 
+class RequestedItem(BaseModel):
+    """The item a seller is offering when no request carries it yet.
+
+    Demand and supply do not have to arrive in that order. A seller holding stock nobody
+    has asked for still has something to say, and naming the item here is what lets
+    request-service open the request their offer hangs on - with no buyers on it, waiting
+    for the first one to join. The fields are request-service's own, because that is who
+    will hold them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_name: str = Field(alias="itemName", max_length=200)
+    description: str = Field(default="", max_length=2000)
+    category: str = Field(default="", max_length=100)
+
+    @field_validator("item_name", "description", "category")
+    @classmethod
+    def trimmed(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("item_name")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 class OfferCreate(BaseModel):
+    """R5: an offer names the demand it answers - either a request that already exists,
+    or the item it is for.
+
+    Exactly one of the two. requestId is the ordinary case, a seller bidding on demand
+    they browsed to. item is the other direction: nothing carries this product yet, so
+    the request is opened as part of storing the offer and the buyers arrive afterwards.
+    Sending both would be two answers to one question, and the service would have to pick
+    one - so it asks rather than guessing.
+    """
+
     # Forbid unknown fields so a caller cannot smuggle in sellerId or status and have it
     # silently ignored - identity and lifecycle are owned by the service, not the client.
     model_config = ConfigDict(extra="forbid")
 
-    request_id: uuid.UUID = Field(alias="requestId")
+    request_id: uuid.UUID | None = Field(default=None, alias="requestId")
+    item: RequestedItem | None = None
     available_quantity: int = Field(alias="availableQuantity", gt=0)
     price_per_unit: Decimal = Field(alias="pricePerUnit", gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(pattern=CURRENCY_PATTERN)
@@ -29,6 +69,16 @@ class OfferCreate(BaseModel):
     @classmethod
     def upper(cls, value: str) -> str:
         return value.upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def one_way_of_naming_the_demand(self) -> "OfferCreate":
+        if (self.request_id is None) == (self.item is None):
+            raise ValueError(
+                "Name the demand this offer answers: either requestId, for a request "
+                "that already exists, or item, for a product no request carries yet - "
+                "one of the two, not both"
+            )
+        return self
 
 
 class OfferUpdate(BaseModel):
@@ -118,5 +168,6 @@ __all__ = [
     "OfferOut",
     "OfferStatus",
     "OfferUpdate",
+    "RequestedItem",
     "StatusUpdate",
 ]

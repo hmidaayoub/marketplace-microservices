@@ -15,7 +15,14 @@ export interface paths {
         put?: never;
         /**
          * Submit Offer
-         * @description R5: only against an existing request. R6: always starts PENDING.
+         * @description R5: only against a request that exists. R6: always starts PENDING.
+         *
+         *     The offer names either the request it answers or the item it is for. Both end at the
+         *     same place - an offer stored against a request that exists - and they differ only in
+         *     who had to have gone first.
+         *
+         *     One live offer per seller per request: a seller who has already answered this demand
+         *     is refused with their existing offer attached, to update rather than duplicate.
          */
         post: operations["submit_offer_api_offers_post"];
         delete?: never;
@@ -127,13 +134,21 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** OfferCreate */
+        /**
+         * OfferCreate
+         * @description R5: an offer names the demand it answers - either a request that already exists,
+         *     or the item it is for.
+         *
+         *     Exactly one of the two. requestId is the ordinary case, a seller bidding on demand
+         *     they browsed to. item is the other direction: nothing carries this product yet, so
+         *     the request is opened as part of storing the offer and the buyers arrive afterwards.
+         *     Sending both would be two answers to one question, and the service would have to pick
+         *     one - so it asks rather than guessing.
+         */
         OfferCreate: {
-            /**
-             * Requestid
-             * Format: uuid
-             */
-            requestId: string;
+            /** Requestid */
+            requestId?: string | null;
+            item?: components["schemas"]["RequestedItem"] | null;
             /** Availablequantity */
             availableQuantity: number;
             /** Priceperunit */
@@ -198,6 +213,30 @@ export interface components {
              */
             description: string;
         };
+        /**
+         * RequestedItem
+         * @description The item a seller is offering when no request carries it yet.
+         *
+         *     Demand and supply do not have to arrive in that order. A seller holding stock nobody
+         *     has asked for still has something to say, and naming the item here is what lets
+         *     request-service open the request their offer hangs on - with no buyers on it, waiting
+         *     for the first one to join. The fields are request-service's own, because that is who
+         *     will hold them.
+         */
+        RequestedItem: {
+            /** Itemname */
+            itemName: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Category
+             * @default
+             */
+            category: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -241,6 +280,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OfferOut"];
                 };
+            };
+            /** @description This seller already has a live offer on this request. The body carries it as `existing` - update that one with PUT /api/offers/{offerId}. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -44,7 +44,8 @@ export default function MyOffers() {
             <EmptyTitle>You have not made an offer yet</EmptyTitle>
             <EmptyDescription>
               Open requests show the combined demand of every buyer who joined — that is what you
-              bid against.
+              bid against. Nobody asking for what you sell is not a reason to wait: offer on the
+              item anyway and the request opens with no buyers, ready for them to join.
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>

@@ -242,9 +242,10 @@ func TestCreateRequest_keepsANameThatIsEntirelyFiller(t *testing.T) {
 	}
 }
 
-// Only open demand pools. A request nobody is on has no demand to join, so naming the
-// item again opens a fresh one rather than being refused for a duplicate.
-func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsInactive(t *testing.T) {
+// A request nobody is on is still the request for that item. Joining it is what makes it
+// demand again - and it may already carry a seller's offer - so a second one would split
+// what the first is waiting to pool.
+func TestCreateRequest_handsOverTheEmptiedRequestRatherThanOpeningASecond(t *testing.T) {
 	h := newHarness(t)
 	_, owner := h.newCustomer()
 	_, other := h.newCustomer()
@@ -257,11 +258,44 @@ func TestCreateRequest_opensAFreshRequestWhenTheOnlyMatchIsInactive(t *testing.T
 	res := h.do(http.MethodPost, "/api/requests", other,
 		`{"itemName":"Espresso Machine","quantity":1}`)
 
+	if res.code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", res.code, res.raw)
+	}
+	existing, ok := res.body["existing"].(map[string]any)
+	if !ok || existing["requestId"] != emptiedID {
+		t.Fatalf("the emptied request was not offered to join: %s", res.raw)
+	}
+	// The wording has to fit what is actually there: "join the open request" would read
+	// as a mistake about a request with nobody on it.
+	if msg, _ := res.body["message"].(string); !strings.Contains(msg, "nobody on it") {
+		t.Errorf("message = %q, want it to say the request has nobody on it", msg)
+	}
+}
+
+// And joining it is what the refusal promised: the emptied request comes back rather
+// than a second one being needed.
+func TestCreateRequest_theEmptiedRequestItOffersCanBeJoined(t *testing.T) {
+	h := newHarness(t)
+	_, owner := h.newCustomer()
+	_, other := h.newCustomer()
+
+	emptiedID := h.createRequest(owner, "Espresso Machine", 3)
+	if res := h.do(http.MethodDelete, "/api/requests/"+emptiedID+"/participants/me", owner, ""); res.code != http.StatusNoContent {
+		t.Fatalf("leaving: status %d body %s", res.code, res.raw)
+	}
+
+	res := h.do(http.MethodPost, "/api/requests/"+emptiedID+"/participants", other, `{"quantity":4}`)
+
 	if res.code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
 	}
-	if got := res.body["requestId"]; got == emptiedID {
-		t.Error("matched the emptied request instead of opening a new one")
+	if got := res.body["status"]; got != "OPEN" {
+		t.Errorf("status = %v, want OPEN - the join revived it", got)
+	}
+	list := h.do(http.MethodGet, "/api/requests", "", "")
+	if len(list.list) != 1 {
+		t.Errorf("browse returns %d requests, want 1 - the demand must not have split: %s",
+			len(list.list), list.raw)
 	}
 }
 
@@ -918,6 +952,228 @@ func TestInternalGet_returns400ForMalformedId(t *testing.T) {
 
 	if res.code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body %s", res.code, res.raw)
+	}
+}
+
+// --- a request opened for a seller, with nobody on it -------------------------------
+//
+// Demand and supply do not have to arrive in that order. A seller holding stock nobody
+// has asked for is worth letting speak first, and the request their offer needs is what
+// gives buyers somewhere to arrive. offer-service opens it through this endpoint.
+
+func TestInternalEnsure_opensARequestNobodyIsOn(t *testing.T) {
+	h := newHarness(t)
+
+	res := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Espresso Machine","description":"forty in stock","category":"kitchen"}`)
+
+	if res.code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body %s", res.code, res.raw)
+	}
+	if got := res.body["status"]; got != "INACTIVE" {
+		t.Errorf("status = %v, want INACTIVE - nobody is on it", got)
+	}
+	if got := num(t, res.body, "totalCustomers"); got != 0 {
+		t.Errorf("totalCustomers = %d, want 0", got)
+	}
+	if got := num(t, res.body, "totalQuantity"); got != 0 {
+		t.Errorf("totalQuantity = %d, want 0", got)
+	}
+	// A seller is not a customer and cannot join, so recording them as the buyer who
+	// wanted this would be a lie about who the request belongs to.
+	if owner, present := res.body["createdBy"]; present {
+		t.Errorf("createdBy = %v, want none - nobody asked for this item", owner)
+	}
+	if got := res.body["itemName"]; got != "Espresso Machine" {
+		t.Errorf("itemName = %v, want it kept as typed", got)
+	}
+}
+
+// It is find-or-create, not create. An item that already has demand must not get a
+// second request, which is the whole rule a customer create is refused on.
+func TestInternalEnsure_returnsTheRequestTheItemAlreadyHas(t *testing.T) {
+	h := newHarness(t)
+	_, customer := h.newCustomer()
+	existingID := h.createRequest(customer, "Espresso Machine", 3)
+
+	res := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Espresso Machine"}`)
+
+	if res.code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 - nothing was created; body %s", res.code, res.raw)
+	}
+	if res.body["requestId"] != existingID {
+		t.Errorf("requestId = %v, want the existing %s", res.body["requestId"], existingID)
+	}
+	// The demand it found is untouched: the seller's offer joins it, it does not reset it.
+	if got := num(t, res.body, "totalCustomers"); got != 1 {
+		t.Errorf("totalCustomers = %d, want 1", got)
+	}
+	if got := res.body["status"]; got != "OPEN" {
+		t.Errorf("status = %v, want OPEN", got)
+	}
+}
+
+// The same normalization a customer create is matched on. A seller typing the name their
+// own way must not open a second request for a product that already has one.
+func TestInternalEnsure_matchesAnItemHoweverItIsSpelled(t *testing.T) {
+	h := newHarness(t)
+	_, customer := h.newCustomer()
+	existingID := h.createRequest(customer, "Espresso Machine", 3)
+
+	for _, name := range []string{"  espresso MACHINE ", "Espresso-Machine!", "Espresso Machine 2024"} {
+		res := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+			fmt.Sprintf(`{"itemName":%q}`, name))
+
+		if res.code != http.StatusOK {
+			t.Errorf("%q: status = %d, want 200; body %s", name, res.code, res.raw)
+			continue
+		}
+		if res.body["requestId"] != existingID {
+			t.Errorf("%q: opened %v instead of matching %s", name, res.body["requestId"], existingID)
+		}
+	}
+}
+
+// Twice for the same item is one request, so a seller who offers twice does not split
+// the demand their own first offer is waiting for.
+func TestInternalEnsure_isIdempotentForTheSameItem(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Standing Desk"}`)
+	second := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Standing Desk"}`)
+
+	if first.code != http.StatusCreated || second.code != http.StatusOK {
+		t.Fatalf("statuses = %d then %d, want 201 then 200", first.code, second.code)
+	}
+	if first.body["requestId"] != second.body["requestId"] {
+		t.Errorf("two ids for one item: %v and %v", first.body["requestId"], second.body["requestId"])
+	}
+}
+
+// The lock is shared with Create, which is what makes this true across the two paths as
+// well as within this one.
+func TestInternalEnsure_concurrentCallsProduceOneRequest(t *testing.T) {
+	h := newHarness(t)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+				`{"itemName":"Bulk Coffee"}`)
+		}()
+	}
+	wg.Wait()
+
+	list := h.do(http.MethodGet, "/api/requests?status=INACTIVE", "", "")
+	if len(list.list) != 1 {
+		t.Fatalf("browse returns %d requests, want 1: %s", len(list.list), list.raw)
+	}
+}
+
+// Nobody joined, so there is nobody to tell. The seller learns the outcome from the
+// response to the offer they were making.
+func TestInternalEnsure_writesNoEvent(t *testing.T) {
+	h := newHarness(t)
+
+	h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Espresso Machine"}`)
+
+	if events := h.outbox(); len(events) != 0 {
+		t.Errorf("outbox has %d events, want none", len(events))
+	}
+}
+
+func TestInternalEnsure_rejectsANamelessItem(t *testing.T) {
+	h := newHarness(t)
+
+	for _, body := range []string{`{}`, `{"itemName":"   "}`, `{"itemName":""}`} {
+		res := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey, body)
+		if res.code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400; body %s", body, res.code, res.raw)
+		}
+	}
+}
+
+// Opening demand is otherwise a customer action, and this endpoint enrolls nobody - so
+// it is behind the internal key like the rest of /internal, and a user token is not it.
+func TestInternalEnsure_isNotReachableWithoutTheInternalKey(t *testing.T) {
+	h := newHarness(t)
+	_, customer := h.newCustomer()
+
+	for name, res := range map[string]response{
+		"no key":    h.doInternalWithBody(http.MethodPost, "/internal/requests", "", `{"itemName":"Drone"}`),
+		"wrong key": h.doInternalWithBody(http.MethodPost, "/internal/requests", "not-the-key", `{"itemName":"Drone"}`),
+		"user jwt":  h.do(http.MethodPost, "/internal/requests", customer, `{"itemName":"Drone"}`),
+	} {
+		if res.code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401; body %s", name, res.code, res.raw)
+		}
+	}
+
+	list := h.do(http.MethodGet, "/api/requests?status=INACTIVE", "", "")
+	if len(list.list) != 0 {
+		t.Errorf("something opened a request anyway: %s", list.raw)
+	}
+}
+
+// The first customer to want the item finds the seller's request instead of opening a
+// rival one - which is the point of the whole arrangement. Without this the seller's
+// offer would sit on a request that never fills while the demand pooled elsewhere.
+func TestCreateRequest_findsTheRequestASellerOpened(t *testing.T) {
+	h := newHarness(t)
+	_, customer := h.newCustomer()
+
+	opened := h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Drone"}`)
+	sellerOpenedID := opened.body["requestId"]
+
+	refused := h.do(http.MethodPost, "/api/requests", customer, `{"itemName":"drone","quantity":2}`)
+
+	if refused.code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", refused.code, refused.raw)
+	}
+	existing, ok := refused.body["existing"].(map[string]any)
+	if !ok || existing["requestId"] != sellerOpenedID {
+		t.Fatalf("was not handed the seller's request to join: %s", refused.raw)
+	}
+
+	joined := h.do(http.MethodPost, "/api/requests/"+sellerOpenedID.(string)+"/participants", customer,
+		`{"quantity":2}`)
+	if joined.code != http.StatusCreated {
+		t.Fatalf("joining: status = %d, want 201; body %s", joined.code, joined.raw)
+	}
+	if got := joined.body["status"]; got != "OPEN" {
+		t.Errorf("status = %v, want OPEN - the item now has a buyer", got)
+	}
+	if got := num(t, joined.body, "totalQuantity"); got != 2 {
+		t.Errorf("totalQuantity = %d, want 2", got)
+	}
+}
+
+// And it is suggested while they type, before they ever reach the refusal.
+func TestSimilarRequests_suggestsARequestWithNoBuyersOnIt(t *testing.T) {
+	h := newHarness(t)
+
+	h.doInternalWithBody(http.MethodPost, "/internal/requests", testInternalAPIKey,
+		`{"itemName":"Espresso Machine"}`)
+
+	res := h.do(http.MethodGet, "/api/requests/similar?itemName="+url.QueryEscape("espreso machin"), "", "")
+
+	if res.code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", res.code, res.raw)
+	}
+	if len(res.list) != 1 {
+		t.Fatalf("%d suggestions, want 1: %s", len(res.list), res.raw)
+	}
+	// The status travels with it, so a client can say what it is offering: an item
+	// somebody is selling rather than one buyers have pooled behind.
+	if got := res.list[0]["status"]; got != "INACTIVE" {
+		t.Errorf("status = %v, want INACTIVE", got)
 	}
 }
 

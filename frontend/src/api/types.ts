@@ -29,6 +29,7 @@ export type Offer = OfferSchema['schemas']['OfferOut']
 export type CompetingOffer = OfferSchema['schemas']['CompetingOfferOut']
 export type AnyOffer = Offer | CompetingOffer
 export type OfferCreate = OfferSchema['schemas']['OfferCreate']
+export type OfferUpdate = OfferSchema['schemas']['OfferUpdate']
 
 export type PendingOffer = AdminSchema['schemas']['admin.pendingOfferResponse']
 export type Decision = AdminSchema['schemas']['admin.decisionResponse']

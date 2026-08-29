@@ -17,14 +17,25 @@ type Querier interface {
 	// R1 with a twist: a second customer asking for the same item is not new demand, it is
 	// more of the demand that already exists - so there is nothing to create, and this is
 	// what says so. Names are compared on request_item_key, so "Espresso Machine",
-	// "espresso machine " and "Espresso-Machine" are one request; the oldest open one wins.
-	// Only OPEN requests match - a closed one cannot be joined, so naming it opens a fresh
-	// request.
+	// "espresso machine " and "Espresso-Machine" are one request.
+	//
+	// Every status matches, not just OPEN. INACTIVE is what a request with nobody on it is
+	// called - the one a seller opened by offering against an item, and the one whose last
+	// participant left - and a join revives either. A second request would have nothing to
+	// add to one and would split the demand of the other, so both are found here.
+	//
+	// OPEN wins when both exist, which only old data can produce: live demand is the better
+	// thing to hand a customer, and the oldest breaks any remaining tie.
 	//
 	// No FOR UPDATE: creating never writes to the request it finds. Joining is a separate
 	// call the customer makes for themselves, and that path takes the lock it needs.
-	FindOpenRequestByItemName(ctx context.Context, itemName string) (PurchaseRequest, error)
+	FindRequestByItemName(ctx context.Context, itemName string) (PurchaseRequest, error)
 	// The names an exact match cannot see, by either of the two signals that catch them.
+	//
+	// Every status is searched, for the same reason the exact match searches every status: a
+	// request with no buyers on it is the one most worth suggesting, since joining it is
+	// what makes it demand again. The status travels with each row, so a caller can say
+	// which it is offering.
 	//
 	// score is trigram distance on the normalized key, which is what finds a typo. contains
 	// is whole-word containment, which is what finds the same product with more said about
@@ -45,7 +56,9 @@ type Querier interface {
 	// pins % to. A min_score below 0.3 filters nothing extra - the operator has already
 	// dropped those rows - and rows found only by containment are returned whatever they
 	// score, which is the point of having a second signal at all.
-	FindSimilarOpenRequests(ctx context.Context, arg FindSimilarOpenRequestsParams) ([]FindSimilarOpenRequestsRow, error)
+	// Status only breaks a tie: a suggestion with buyers already on it is the better one
+	// to offer, but never at the cost of a closer name.
+	FindSimilarRequests(ctx context.Context, arg FindSimilarRequestsParams) ([]FindSimilarRequestsRow, error)
 	GetParticipant(ctx context.Context, arg GetParticipantParams) (RequestParticipant, error)
 	GetRequest(ctx context.Context, requestID uuid.UUID) (PurchaseRequest, error)
 	ListParticipantCustomerIDs(ctx context.Context, requestID uuid.UUID) ([]uuid.UUID, error)
