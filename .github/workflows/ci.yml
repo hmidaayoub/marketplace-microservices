@@ -110,7 +110,11 @@ jobs:
 
       # No setup-python: uv brings its own interpreter, and the version it must be lives
       # in each module's requires-python already.
-      - uses: astral-sh/setup-uv@v10
+      # Pinned to an exact tag, unlike the other four actions here. setup-uv stopped
+      # publishing a floating major alias after v7 - there is no `v10` ref, only
+      # v10.0.1 - so a major-only pin does not resolve and the job dies before its
+      # first step.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: ${{ matrix.module }}/uv.lock
