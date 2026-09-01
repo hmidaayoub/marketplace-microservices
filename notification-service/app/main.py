@@ -9,11 +9,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import get_settings
-from app.openapi import customise_openapi
 from app.db import dispose_engine, get_engine
 from app.errors import register_exception_handlers
 from app.events import Consumer
 from app.migrate import run_migrations
+from app.openapi import customise_openapi
 from app.routers import internal, notifications
 
 

@@ -60,9 +60,7 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
-        sa.CheckConstraint(
-            f"length(image_data) <= {SIZE_CAP}", name="offer_image_within_size_cap"
-        ),
+        sa.CheckConstraint(f"length(image_data) <= {SIZE_CAP}", name="offer_image_within_size_cap"),
         sa.CheckConstraint("length(image_data) > 0", name="offer_image_not_empty"),
     )
 

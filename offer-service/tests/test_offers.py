@@ -315,9 +315,7 @@ async def test_offering_again_after_cancelling_is_allowed(
     request_id = await _open_request(upstream)
 
     created = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
-    cancelled = await client.delete(
-        f"/api/offers/{created.json()['offerId']}", headers=auth(token)
-    )
+    cancelled = await client.delete(f"/api/offers/{created.json()['offerId']}", headers=auth(token))
     assert cancelled.status_code == 204, cancelled.text
 
     again = await client.post("/api/offers", json=_body(request_id), headers=auth(token))
