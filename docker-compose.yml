@@ -68,6 +68,17 @@ services:
       retries: 12
       start_period: 5s
 
+  # The app itself: a directory of static files and an nginx to hand them over. It
+  # publishes no port, because 8080 still publishes everything - the gateway serves the
+  # bundle and the API from one origin, which is what makes the app's own requests
+  # relative and the CORS allowance at the edge a development convenience rather than
+  # part of the deployment.
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    # The healthcheck is declared in the Dockerfile, like the two Python services'.
+
   gateway:
     image: nginx:1.27-alpine
     ports: ["8080:8080"]
@@ -88,6 +99,10 @@ services:
       # holding the whole edge closed until a documentation UI is ready gets that
       # backwards.
       swagger-ui: {condition: service_started}
+      # Healthy, unlike the docs: this is what a person opens at 8080, and an nginx over
+      # static files is ready in about a second - a 502 on the front page costs more than
+      # waiting for it.
+      frontend: {condition: service_healthy}
     healthcheck:
       # 127.0.0.1, not localhost: inside the container localhost resolves to ::1 first
       # and nginx listens on IPv4 only, so the probe would be refused by a healthy edge.
