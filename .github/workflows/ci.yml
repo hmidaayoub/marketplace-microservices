@@ -1,0 +1,158 @@
+# Every test this repo has, on every push.
+#
+# The platform is five toolchains - Maven, two Go modules, two Python modules and a Vite
+# frontend - and each one already knows how to check itself. This runs them, in parallel,
+# so that "394 tests pass" is a fact about the branch rather than about the last machine
+# somebody remembered to run them on.
+name: CI
+
+# Every branch, not only main. Feature branches are merged locally here rather than
+# through pull requests, so a pull_request trigger would never fire - and the run worth
+# having is the one that happens before the merge, not after it.
+on:
+  push:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run's answer stale. Only the newest
+# commit's verdict means anything, so the older run is cancelled rather than paid for.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# It reads code and runs tests. Nothing here publishes, comments or deploys.
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Matches the local toolchain rather than tracking "latest", so a Node release
+          # cannot turn a green branch red on its own.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # ci, not install: it installs exactly what the lockfile pins and fails when the
+      # lockfile and package.json have drifted apart - which is the one thing a build
+      # machine must never paper over.
+      - run: npm ci
+
+      # Through the script, so CI runs the same command a developer does. It is `tsc -b`
+      # and not `tsc --noEmit`: the root tsconfig is solution-style with project
+      # references, so --noEmit resolves no files, checks nothing and passes in silence.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  go:
+    # One run per module, named so a failure says which. They are separate Go modules
+    # outside the Maven reactor, and nothing but HTTP passes between them.
+    name: go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # A failure in one module is not a reason to withhold the other's verdict.
+      fail-fast: false
+      matrix:
+        module: [request-service, admin-service]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # Read from the module rather than pinned here: the version already lives in
+          # go.mod, and two places to bump is one place to forget.
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      # -count=1 turns off the test cache. A restored cache can report PASS for a package
+      # whose inputs have not changed without running it, and these suites stand up a real
+      # PostgreSQL through Testcontainers - the runner's own Docker daemon - so "it ran" is
+      # worth the ten seconds.
+      - name: Test
+        run: go test ./... -count=1
+
+  python:
+    name: python (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [offer-service, notification-service]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # No setup-python: uv brings its own interpreter, and the version it must be lives
+      # in each module's requires-python already.
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.module }}/uv.lock
+
+      # --locked is uv's `npm ci`: install exactly the lockfile, and fail if pyproject.toml
+      # has drifted from it rather than quietly resolving something new.
+      - name: Install
+        run: uv sync --all-groups --locked
+
+      # Before the linters, deliberately. A job stops at its first failing step, so the
+      # order decides what a red run tells you: an unsorted import must never hide whether
+      # the platform still works. The other way round costs nothing.
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+  java:
+    # One job rather than a matrix: the four Maven modules are one reactor, and three of
+    # them compile against common-security, so building them apart would prove less than
+    # building them together.
+    name: java (maven reactor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          # The version the root pom declares in <java.version>.
+          java-version: 21
+          cache: maven
+
+      # No MAVEN_OPTS here on purpose. The heap caps that keep the reactor from being
+      # OOM-killed beside a Testcontainers PostgreSQL live in .mvn/jvm.config and in the
+      # surefire configuration, so they travel with the repository and this runner gets
+      # exactly what a developer's machine gets. Setting them here would be a second
+      # answer to the same question.
+      - name: Test
+        run: mvn -B -ntp test
