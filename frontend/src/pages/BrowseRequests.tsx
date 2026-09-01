@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { HandshakeIcon, LogInIcon, PackageIcon, PlusIcon, SearchIcon, UsersIcon } from 'lucide-react'
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
@@ -46,12 +46,8 @@ export default function BrowseRequests() {
   // flashing "sign in" at somebody who already is would be worse than showing nothing.
   const signedIn = useAppSelector((s) => Boolean(s.auth.accessToken))
   const location = useLocation()
-  // The search box lives in the shell, beside the brand, and puts the term here. Reading
-  // it from the URL rather than from a prop or the store is what lets a page and a
-  // component that does not contain it agree on one term - and makes a search something
-  // you can link to.
-  const query = (useSearchParams()[0].get('q') ?? '').trim()
-  const searching = query.length > 0
+  const [query, setQuery] = useState('')
+  const searching = query.trim().length > 0
 
   useEffect(() => {
     // Typing should not fire a request per keystroke; the pause is short enough that
@@ -59,7 +55,7 @@ export default function BrowseRequests() {
     const id = setTimeout(() => {
       dispatch(
         fetchRequests({
-          q: query || undefined,
+          q: query.trim() || undefined,
           // Browsing shows live demand only. A dormant request - nobody wants the item
           // and nobody is selling it - is not something to put in front of someone who
           // came to see what the platform has: there is nothing happening on it.
@@ -97,6 +93,21 @@ export default function BrowseRequests() {
           </Button>
         )}
       </PageHeader>
+
+      <Card size="sm">
+        <CardContent>
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              placeholder="Search for an espresso machine…"
+              aria-label="Search requests"
+              className="pl-8"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       <ErrorAlert>{error}</ErrorAlert>
 

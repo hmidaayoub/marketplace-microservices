@@ -11,17 +11,15 @@ import {
   MenuIcon,
   ReceiptTextIcon,
   ScrollTextIcon,
-  SearchIcon,
   StoreIcon,
   type LucideIcon,
 } from 'lucide-react'
-import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { ModeToggle } from '@/components/mode-toggle'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,57 +34,6 @@ import { useAppDispatch, useAppSelector } from '@/store'
 import { logout, selectDisplayName } from '@/store/authSlice'
 import { fetchUnreadCount } from '@/store/notificationsSlice'
 import { cn } from '@/lib/utils'
-
-/**
- * Searching the marketplace, from wherever you are.
- *
- * The term lives in the URL rather than in this component or in the store, which is what
- * lets it sit in the shell and drive a page it does not own: BrowseRequests reads the
- * same `q` and is the only thing that fetches. It also makes a search something you can
- * link to or come back to, which local state would not.
- *
- * Typing from another page navigates to browsing and then replaces, so a search leaves
- * one entry in the history - the page you came from - rather than one per keystroke.
- */
-function HeaderSearch() {
-  const [params, setParams] = useSearchParams()
-  const location = useLocation()
-  const navigate = useNavigate()
-
-  const browsing = location.pathname === '/requests'
-  // Controlled by the URL, so there is no second copy of the term to keep in step.
-  // Off the browse page there is nothing to show: the term shown has to be the term
-  // being searched, and nothing is.
-  const value = browsing ? (params.get('q') ?? '') : ''
-
-  function search(next: string) {
-    if (!browsing) {
-      navigate(next ? `/requests?q=${encodeURIComponent(next)}` : '/requests')
-      return
-    }
-    const updated = new URLSearchParams(params)
-    if (next) updated.set('q', next)
-    else updated.delete('q')
-    setParams(updated, { replace: true })
-  }
-
-  return (
-    // It gives way rather than pushing: min-w-0 lets it shrink past the input's own
-    // intrinsic width, so a narrow screen takes it out of the search box instead of out
-    // of the sign-in buttons at the other end of the row. Capped, because a search box
-    // as wide as the header would be the loudest thing in the shell.
-    <div className="relative min-w-0 flex-1 sm:max-w-40 lg:max-w-52">
-      <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-      <Input
-        value={value}
-        onChange={(e) => search(e.target.value)}
-        placeholder="Search demand…"
-        aria-label="Search requests"
-        className="h-8 w-full pl-7 text-sm"
-      />
-    </div>
-  )
-}
 
 /** Notifications arrive over a broker on a two-second relay tick, so the badge polls. */
 const UNREAD_POLL_MS = 10_000
@@ -213,8 +160,6 @@ export default function AppLayout() {
             </span>
             <span className="hidden sm:inline">Marketplace</span>
           </NavLink>
-
-          <HeaderSearch />
 
           {links.length > 0 && (
             <Separator orientation="vertical" className="mx-1 hidden h-5! md:block" />
