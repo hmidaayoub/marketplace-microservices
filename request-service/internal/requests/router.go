@@ -56,6 +56,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// relies on one group down.
 		r.Get("/similar", cfg.Handler.Similar)
 		r.Get("/{requestId}", cfg.Handler.Get)
+		// Open for the same reason the request itself is: it carries no participant
+		// identity, and a visitor has to be able to see the demand before joining it.
+		r.Get("/{requestId}/image", cfg.Handler.Image)
 
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireJWT(cfg.Verifier))

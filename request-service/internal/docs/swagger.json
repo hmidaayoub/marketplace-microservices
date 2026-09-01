@@ -70,6 +70,10 @@
                         "description": "Set when this request carries the searched-for name outright rather than merely\nsomething like it. It is what tells a client that creating is not on offer here -\nonly joining is - so the form can say so before the customer finds out from a 409.",
                         "type": "boolean"
                     },
+                    "hasImage": {
+                        "description": "Whether /api/requests/{id}/image will answer with a picture. A flag and not the\nbytes, and not a URL either: the bytes would make a browse page of twenty\nrequests twenty megabytes, and a URL the client can already build from the id it\nholds is a second thing to keep in step with the routing table.",
+                        "type": "boolean"
+                    },
                     "itemName": {
                         "type": "string"
                     },
@@ -196,7 +200,7 @@
                 ]
             },
             "post": {
-                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.\nIf a request already carries this item name, nothing is created: the 409\ncomes back with that request attached, and joining it is the\ncustomer's own call through the participants endpoint. That holds for a\nrequest with no buyers on it too - one a seller opened by offering\nagainst the item, or one everybody has left - because joining is what\nmakes it demand again. A merely similar\nname is not refused - see /api/requests/similar, which is what the\nnew-request form shows while the name is being typed.",
+                "description": "Opens a request other customers can join. The caller becomes its first\nparticipant; the customerId is resolved from the token, never sent.\nIf a request already carries this item name, nothing is created: the 409\ncomes back with that request attached, and joining it is the\ncustomer's own call through the participants endpoint. That holds for a\nrequest with no buyers on it too - one a seller opened by offering\nagainst the item, or one everybody has left - because joining is what\nmakes it demand again. A merely similar\nname is not refused - see /api/requests/similar, which is what the\nnew-request form shows while the name is being typed.\nA picture of the item is optional. Send the body as multipart/form-data\nwith the JSON in a \"payload\" part and the file in an \"image\" part; a\nplain application/json body works exactly as before.",
                 "requestBody": {
                     "content": {
                         "application/json": {
@@ -211,6 +215,11 @@
                                         "description": "Item, category and the caller's own quantity"
                                     }
                                 ]
+                            }
+                        },
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object"
                             }
                         }
                     },
@@ -421,6 +430,48 @@
                     }
                 },
                 "summary": "Read one request with its aggregated demand",
+                "tags": [
+                    "requests"
+                ]
+            }
+        },
+        "/api/requests/{requestId}/image": {
+            "get": {
+                "description": "Answers 404 when the request carries no picture, which is the ordinary\ncase - clients read hasImage on the request rather than probing here.",
+                "parameters": [
+                    {
+                        "description": "Request id",
+                        "in": "path",
+                        "name": "requestId",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "image/png": {
+                                "schema": {
+                                    "type": "file"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "404": {
+                        "content": {
+                            "image/png": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/httpx.ErrorBody"
+                                }
+                            }
+                        },
+                        "description": "No such request, or it has no picture"
+                    }
+                },
+                "summary": "The picture of a request's item",
                 "tags": [
                     "requests"
                 ]

@@ -20,8 +20,14 @@ type Offer struct {
 	Currency          string    `json:"currency"`
 	Description       string    `json:"description"`
 	Status            string    `json:"status"`
-	CreatedAt         string    `json:"createdAt"`
-	UpdatedAt         string    `json:"updatedAt"`
+
+	// Whether the offer carries a picture of the product. Only the flag travels: the
+	// bytes stay in offer-service, and the admin's browser fetches them from there with
+	// the admin's own token, so a queue of twenty offers is twenty small JSON rows here
+	// rather than twenty megabytes through this service.
+	HasImage  bool   `json:"hasImage"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 type OfferClient struct{ t transport }

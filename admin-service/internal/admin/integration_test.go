@@ -448,6 +448,15 @@ func (h *harness) newOfferOn(requestID, sellerID uuid.UUID) uuid.UUID {
 	return offerID
 }
 
+// givePicture marks an offer as carrying one, the way offer-service would once a
+// seller uploaded it.
+func (h *harness) givePicture(offerID uuid.UUID) {
+	h.t.Helper()
+	h.p.mu.Lock()
+	defer h.p.mu.Unlock()
+	h.p.offers[offerID].HasImage = true
+}
+
 func (h *harness) offerStatus(offerID uuid.UUID) string {
 	h.t.Helper()
 	h.p.mu.Lock()

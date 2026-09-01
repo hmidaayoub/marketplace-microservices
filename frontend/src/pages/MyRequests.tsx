@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { ChevronRightIcon, ScrollTextIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import { RequestImage } from '@/components/item-image'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -60,7 +61,15 @@ export default function MyRequests() {
             >
               <Card size="sm" className="transition-shadow group-hover:ring-primary/40">
                 <CardContent className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
+                  {/* A thumbnail rather than the browse list's banner: this list is read
+                      to find one of your own requests again, and a picture recognises
+                      faster than a name reads. */}
+                  <RequestImage
+                    requestId={request.requestId}
+                    hasImage={request.hasImage}
+                    className="size-12 shrink-0 rounded-md"
+                  />
+                  <div className="min-w-0 flex-1">
                     <p className="font-medium">{request.itemName}</p>
                     <p className="text-sm text-muted-foreground tabular-nums">
                       {request.totalCustomers} buyers · {request.totalQuantity} units

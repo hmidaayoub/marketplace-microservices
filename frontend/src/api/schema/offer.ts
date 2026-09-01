@@ -23,6 +23,10 @@ export interface paths {
          *
          *     One live offer per seller per request: a seller who has already answered this demand
          *     is refused with their existing offer attached, to update rather than duplicate.
+         *
+         *     A picture of what is being offered is optional. Send the body as multipart/form-data
+         *     with the JSON in a "payload" part and the file in an "image" part; a plain
+         *     application/json body works exactly as it always has.
          */
         post: operations["submit_offer_api_offers_post"];
         delete?: never;
@@ -81,11 +85,50 @@ export interface paths {
         };
         /** Get Offer */
         get: operations["get_offer_api_offers__offer_id__get"];
-        /** Update Offer */
+        /**
+         * Update Offer
+         * @description Changing the terms of an offer already made. Only a PENDING offer accepts this.
+         *
+         *     A picture sent here replaces the one the offer carries. Sending none leaves it
+         *     alone: the seller is editing a price in a form that already shows their picture, and
+         *     reading its absence as a delete would lose it by accident.
+         */
         put: operations["update_offer_api_offers__offer_id__put"];
         post?: never;
         /** Cancel Offer */
         delete: operations["cancel_offer_api_offers__offer_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/offers/{offer_id}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Offer Image
+         * @description The picture attached to an offer.
+         *
+         *     Behind a token, unlike a request's picture, and behind the same projection that
+         *     governs the offer itself: customers and admins see it, a seller sees their own but
+         *     never a competitor's.
+         *
+         *     That last rule is the point. CompetingOfferOut withholds sellerId so browsing the
+         *     market cannot tell a seller who they are bidding against, and a photograph of a
+         *     product is not anonymous - a shop sign, a watermark or a business card in frame
+         *     names the seller as surely as the field does. An image endpoint any seller could
+         *     read would be a way around the projection rather than a view of it, so the picture
+         *     of a rival's offer is not served at all: it is not mentioned in their projection,
+         *     and asking for it directly is a 404 like any other URL that holds nothing.
+         */
+        get: operations["offer_image_api_offers__offer_id__image_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -134,33 +177,6 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /**
-         * OfferCreate
-         * @description R5: an offer names the demand it answers - either a request that already exists,
-         *     or the item it is for.
-         *
-         *     Exactly one of the two. requestId is the ordinary case, a seller bidding on demand
-         *     they browsed to. item is the other direction: nothing carries this product yet, so
-         *     the request is opened as part of storing the offer and the buyers arrive afterwards.
-         *     Sending both would be two answers to one question, and the service would have to pick
-         *     one - so it asks rather than guessing.
-         */
-        OfferCreate: {
-            /** Requestid */
-            requestId?: string | null;
-            item?: components["schemas"]["RequestedItem"] | null;
-            /** Availablequantity */
-            availableQuantity: number;
-            /** Priceperunit */
-            pricePerUnit: number | string;
-            /** Currency */
-            currency: string;
-            /**
-             * Description
-             * @default
-             */
-            description: string;
-        };
         /** OfferOut */
         OfferOut: {
             /**
@@ -198,20 +214,24 @@ export interface components {
              * Format: date-time
              */
             updatedAt: string;
-        };
-        /** OfferUpdate */
-        OfferUpdate: {
-            /** Availablequantity */
-            availableQuantity: number;
-            /** Priceperunit */
-            pricePerUnit: number | string;
-            /** Currency */
-            currency: string;
             /**
-             * Description
-             * @default
+             * Hasimage
+             * @default false
              */
-            description: string;
+            hasImage: boolean;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
         /**
          * RequestedItem
@@ -237,18 +257,46 @@ export interface components {
              */
             category: string;
         };
-        /** ValidationError */
-        ValidationError: {
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
+        /**
+         * OfferCreate
+         * @description R5: an offer names the demand it answers - either a request that already exists,
+         *     or the item it is for.
+         *
+         *     Exactly one of the two. requestId is the ordinary case, a seller bidding on demand
+         *     they browsed to. item is the other direction: nothing carries this product yet, so
+         *     the request is opened as part of storing the offer and the buyers arrive afterwards.
+         *     Sending both would be two answers to one question, and the service would have to pick
+         *     one - so it asks rather than guessing.
+         */
+        OfferCreate: {
+            /** Requestid */
+            requestId?: string | null;
+            item?: components["schemas"]["RequestedItem"] | null;
+            /** Availablequantity */
+            availableQuantity: number;
+            /** Priceperunit */
+            pricePerUnit: number | string;
+            /** Currency */
+            currency: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+        };
+        /** OfferUpdate */
+        OfferUpdate: {
+            /** Availablequantity */
+            availableQuantity: number;
+            /** Priceperunit */
+            pricePerUnit: number | string;
+            /** Currency */
+            currency: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
         };
     };
     responses: never;
@@ -266,9 +314,19 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
+        /** @description The offer, and optionally a picture of it. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OfferCreate"];
+                "multipart/form-data": {
+                    /** @description The OfferCreate fields, as a JSON string. */
+                    payload: string;
+                    /**
+                     * Format: binary
+                     * @description Optional picture of the product. JPEG, PNG or WebP, at most 1 MiB. The format is read from the bytes, not from the part's declared content type.
+                     */
+                    image?: string;
+                };
             };
         };
         responses: {
@@ -399,9 +457,19 @@ export interface operations {
             };
             cookie?: never;
         };
+        /** @description The new terms, and optionally a new picture. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OfferUpdate"];
+                "multipart/form-data": {
+                    /** @description The OfferUpdate fields, as a JSON string. */
+                    payload: string;
+                    /**
+                     * Format: binary
+                     * @description Optional picture of the product. JPEG, PNG or WebP, at most 1 MiB. The format is read from the bytes, not from the part's declared content type.
+                     */
+                    image?: string;
+                };
             };
         };
         responses: {
@@ -438,6 +506,44 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    offer_image_api_offers__offer_id__image_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                offer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The picture of what is offered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/*": unknown;
+                };
+            };
+            /** @description No such offer, or it carries no picture */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

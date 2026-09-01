@@ -3,16 +3,20 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/clients"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/httpx"
+	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/media"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/middleware"
 	"github.com/hmidaayoub/marketplace-microservices/request-service/internal/store"
 )
@@ -50,8 +54,12 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Description makes it demand again. A merely similar
 //	@Description name is not refused - see /api/requests/similar, which is what the
 //	@Description new-request form shows while the name is being typed.
+//	@Description A picture of the item is optional. Send the body as multipart/form-data
+//	@Description with the JSON in a "payload" part and the file in an "image" part; a
+//	@Description plain application/json body works exactly as before.
 //	@Tags		requests
 //	@Accept		json
+//	@Accept		mpfd
 //	@Produce	json
 //	@Param		body	body		createRequestBody	true	"Item, category and the caller's own quantity"
 //	@Success	201		{object}	requestResponse
@@ -63,12 +71,27 @@ func NewHandler(service *Service, customers customerResolver) *Handler {
 //	@Router		/api/requests [post]
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var body createRequestBody
-	if !httpx.DecodeJSON(w, r, &body) {
+	// Accepts the JSON it always did, and multipart when the customer chose a picture.
+	// Every existing caller sends the former and is unaffected.
+	image, ok := httpx.DecodeJSONOrMultipart(w, r, &body, media.MaxBytes)
+	if !ok {
 		return
 	}
 	if msg := body.validate(); msg != "" {
 		httpx.Error(w, http.StatusBadRequest, msg)
 		return
+	}
+
+	// Sniffed from the bytes, never taken from the part's declared type - see
+	// media.Detect. A picture that is not one is a 400 before anything is written.
+	var imageType string
+	if len(image) > 0 {
+		detected, err := media.Detect(image)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		imageType = detected
 	}
 
 	customerID, ok := h.callerCustomerID(w, r)
@@ -87,6 +110,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Category:    body.Category,
 		Quantity:    body.Quantity,
 		ActorUserID: actorUserID,
+		Image:       image,
+		ImageType:   imageType,
 	})
 	// Not h.fail: the refusal carries the request it collided with, and the whole point
 	// of refusing is to hand the customer somewhere to go instead.
@@ -212,6 +237,74 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusOK, toResponse(found))
+}
+
+// Image handles GET /api/requests/{requestId}/image.
+//
+// Open, like the request it belongs to. A picture of an espresso machine is not
+// participant data - requestResponse already carries everything else about a request to
+// anybody who asks - so putting it behind a token would only stop the browse page from
+// rendering for a visitor who has not signed in yet.
+//
+//	@Summary	The picture of a request's item
+//	@Description Answers 404 when the request carries no picture, which is the ordinary
+//	@Description case - clients read hasImage on the request rather than probing here.
+//	@Tags		requests
+//	@Produce	png
+//	@Param		requestId	path	string	true	"Request id"
+//	@Success	200	{file}		binary
+//	@Failure	404	{object}	httpx.ErrorBody	"No such request, or it has no picture"
+//	@Router		/api/requests/{requestId}/image [get]
+func (h *Handler) Image(w http.ResponseWriter, r *http.Request) {
+	requestID, ok := pathUUID(w, r, "requestId")
+	if !ok {
+		return
+	}
+
+	data, imageType, updatedAt, err := h.service.Image(r.Context(), requestID)
+	if err != nil {
+		// A request with no picture and a request that does not exist are the same
+		// answer here: there is nothing at this URL. Distinguishing them would tell an
+		// unauthenticated caller which request ids are real.
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.Error(w, http.StatusNotFound, "No image for this request")
+			return
+		}
+		h.fail(w, r, err)
+		return
+	}
+
+	serveImage(w, r, data, imageType, updatedAt)
+}
+
+// serveImage writes image bytes with the headers that keep a browser from asking for
+// them again on every render.
+//
+// The ETag is the stored timestamp rather than a hash of the bytes: an image is
+// replaced as a whole or not at all, so the two change together, and hashing a
+// megabyte on every request to learn what a column already says would be work for
+// nothing. Private, because the URL is per request and a shared cache holding it would
+// serve one platform's images from another's edge.
+func serveImage(w http.ResponseWriter, r *http.Request, data []byte, imageType string, updatedAt time.Time) {
+	etag := fmt.Sprintf(`"%d"`, updatedAt.UnixNano())
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	// The browser is told the type this file actually is, and told not to look for a
+	// different one. Without nosniff a file that sniffed as an image here could still be
+	// re-sniffed as something scriptable by the browser.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if match := r.Header.Get("If-None-Match"); match == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.Header().Set("Content-Type", imageType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		slog.Error("writing image body", "error", err)
+	}
 }
 
 // Mine handles GET /api/requests/me: every request the calling customer takes part in,

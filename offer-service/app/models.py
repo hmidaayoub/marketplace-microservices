@@ -5,7 +5,18 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Numeric, String, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -95,6 +106,11 @@ class Offer(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False, server_default="")
 
+    # The media type of the picture of what is being offered, or "" for the offers that
+    # carry none. The bytes are in offer_image; this is here because every reader needs
+    # to know whether a picture exists and no reader but one needs the picture itself.
+    image_type: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=OfferStatus.PENDING
     )
@@ -114,6 +130,10 @@ class Offer(Base):
         CheckConstraint("available_quantity > 0", name="offer_quantity_positive"),
         CheckConstraint("price_per_unit > 0", name="offer_price_positive"),
         CheckConstraint("currency ~ '^[A-Z]{3}$'", name="offer_currency_iso4217_shape"),
+        CheckConstraint(
+            "image_type IN ('', 'image/jpeg', 'image/png', 'image/webp')",
+            name="offer_image_type_valid",
+        ),
         Index("idx_offer_request", "request_id"),
         Index("idx_offer_seller", "seller_id"),
         # One live offer per seller per request. Unique in the database and not only in
@@ -128,4 +148,34 @@ class Offer(Base):
         ),
         # Serves GET /internal/offers/pending, the admin review queue.
         Index("idx_offer_status_created", "status", "created_at"),
+    )
+
+
+class OfferImage(Base):
+    """The picture of what a seller is offering, kept apart from the offer itself.
+
+    A table rather than a column, for the reason migration 0004 gives: an offer is read
+    on every admin queue page, every seller list and every competing-offer projection,
+    and none of those show a picture. Loading a megabyte per row to render a price is
+    what a separate table avoids.
+
+    One row per offer at most, so the offer id is the key. Replacing a picture is an
+    upsert rather than a second row: an offer shows one thing.
+    """
+
+    __tablename__ = "offer_image"
+
+    offer_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("offer.offer_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    image_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("length(image_data) <= 2097152", name="offer_image_within_size_cap"),
+        CheckConstraint("length(image_data) > 0", name="offer_image_not_empty"),
     )

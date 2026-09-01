@@ -178,3 +178,30 @@ RETURNING pr.*;
 UPDATE purchase_request
 SET total_offers = @total_offers
 WHERE request_id = @request_id;
+
+-- The picture of the item, stored apart from the request so that browsing a hundred
+-- requests does not read a hundred images. Upserted rather than inserted: replacing the
+-- picture is the same act as adding one, and a request holds at most one.
+--
+-- The media type goes onto the request row in the same statement pair, because that is
+-- the half every reader needs and this is the half only the image endpoint does.
+-- name: SetRequestImage :exec
+INSERT INTO request_image (request_id, image_data, updated_at)
+VALUES (@request_id, @image_data, now())
+ON CONFLICT (request_id) DO UPDATE
+SET image_data = EXCLUDED.image_data,
+    updated_at = now();
+
+-- name: SetRequestImageType :exec
+UPDATE purchase_request
+SET image_type = @image_type,
+    updated_at = now()
+WHERE request_id = @request_id;
+
+-- Serves GET /api/requests/{id}/image. The media type comes from the request row so one
+-- read answers the whole response, headers included.
+-- name: GetRequestImage :one
+SELECT ri.image_data, ri.updated_at, pr.image_type
+FROM request_image ri
+JOIN purchase_request pr ON pr.request_id = ri.request_id
+WHERE ri.request_id = @request_id;

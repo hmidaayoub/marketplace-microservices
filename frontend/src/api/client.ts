@@ -37,10 +37,16 @@ type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 interface RequestOptions {
   method?: Method
+  /** A plain value is sent as JSON; FormData is sent as multipart, for the endpoints
+   *  that take a picture alongside their fields. */
   body?: unknown
   token?: string | null
   /** Set when the caller handles its own 401 - the login and refresh calls. */
   skipAuthRetry?: boolean
+  /** 'blob' for the image endpoints, which answer with bytes rather than JSON. The
+   *  refresh-and-retry above still applies: an image behind a token can 401 like
+   *  anything else. */
+  responseType?: 'json' | 'blob'
 }
 
 /** Swapped in by the auth provider so a 401 can refresh once and retry. */
@@ -62,16 +68,21 @@ async function parse(response: Response): Promise<unknown> {
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, token, skipAuthRetry } = options
+  const { method = 'GET', body, token, skipAuthRetry, responseType = 'json' } = options
 
   const send = (bearer: string | null | undefined) => {
     const headers: Record<string, string> = {}
-    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    // FormData sets its own Content-Type, and it has to: the header carries the
+    // multipart boundary, which only the browser knows. Setting it here by hand would
+    // produce a boundary-less header the server cannot parse the body against.
+    if (body !== undefined && !(body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json'
+    }
     if (bearer) headers.Authorization = `Bearer ${bearer}`
     return fetch(`${BASE}${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     })
   }
 
@@ -85,7 +96,9 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
     if (refreshed) response = await send(refreshed)
   }
 
-  const payload = await parse(response)
+  // Read before the ok check either way, so a failed image request still produces the
+  // platform's error shape rather than an unread body.
+  const payload = response.ok && responseType === 'blob' ? await response.blob() : await parse(response)
 
   if (!response.ok) {
     const message =
@@ -96,4 +109,24 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   }
 
   return payload as T
+}
+
+/**
+ * The body for an endpoint that accepts a picture beside its JSON.
+ *
+ * The two services that take one - request-service in Go, offer-service in Python -
+ * agree on the shape: the fields in a part named `payload`, the file in a part named
+ * `image`. The JSON stays whole in one part rather than being spread across form keys,
+ * because these bodies are not flat and a server would otherwise need a second parser
+ * for the multipart case that could disagree with the first about what is valid.
+ *
+ * Called with no image it still returns FormData, and that is deliberate: the form
+ * posts the same way whether or not a picture was chosen, so there is one request path
+ * to get right rather than two.
+ */
+export function multipart(payload: unknown, image: Blob | null): FormData {
+  const form = new FormData()
+  form.append('payload', JSON.stringify(payload))
+  if (image) form.append('image', image, 'image')
+  return form
 }

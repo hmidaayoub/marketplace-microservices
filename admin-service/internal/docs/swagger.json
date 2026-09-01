@@ -111,6 +111,10 @@
                     "description": {
                         "type": "string"
                     },
+                    "hasImage": {
+                        "description": "Whether GET /api/offers/{id}/image will answer with a picture of the product.\nThe queue is where an offer is judged, and what is being sold is part of that -\nbut the bytes are not relayed through this service: the flag says a picture\nexists, and the admin's browser reads it from offer-service, which is the service\nthat decides who may see one.",
+                        "type": "boolean"
+                    },
                     "offerId": {
                         "type": "string"
                     },

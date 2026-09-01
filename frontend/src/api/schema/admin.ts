@@ -514,6 +514,14 @@ export interface components {
             availableQuantity?: number;
             currency?: string;
             description?: string;
+            /**
+             * @description Whether GET /api/offers/{id}/image will answer with a picture of the product.
+             *     The queue is where an offer is judged, and what is being sold is part of that -
+             *     but the bytes are not relayed through this service: the flag says a picture
+             *     exists, and the admin's browser reads it from offer-service, which is the service
+             *     that decides who may see one.
+             */
+            hasImage?: boolean;
             offerId?: string;
             pricePerUnit?: string;
             requestId?: string;

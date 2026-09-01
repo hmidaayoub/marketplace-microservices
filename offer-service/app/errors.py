@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.bodies import BadBody
 from app.clients import RequestMissing, SellerProfileMissing, UpstreamUnavailable
 from app.service import (
     NotOfferOwner,
@@ -38,6 +39,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return error_response(status.HTTP_400_BAD_REQUEST, _first_validation_message(exc))
+
+    @app.exception_handler(BadBody)
+    async def bad_body(_: Request, exc: BadBody) -> JSONResponse:
+        # A body that could not be read at all - malformed multipart, a missing payload
+        # part, a file that is not an image. Distinct from a validation failure, which
+        # got as far as the model; the same shape and status either way.
+        return error_response(exc.status_code, exc.message)
 
     @app.exception_handler(OfferNotFound)
     async def offer_not_found(*_: object) -> JSONResponse:

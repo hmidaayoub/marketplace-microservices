@@ -6,6 +6,8 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
+import { ImageField } from '@/components/image-field'
+import { RequestImage } from '@/components/item-image'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -157,6 +159,17 @@ function RequestCard({ request }: { request: PurchaseRequest }) {
           </div>
           <CardDescription className="line-clamp-2">{request.description}</CardDescription>
         </CardHeader>
+        {/* Only for the requests that carry one, so a list of mostly-unillustrated
+            demand does not become a column of grey placeholder boxes. */}
+        {request.hasImage && (
+          <CardContent>
+            <RequestImage
+              requestId={request.requestId}
+              hasImage={request.hasImage}
+              className="h-36 w-full"
+            />
+          </CardContent>
+        )}
         <CardContent className="flex gap-6">
           <div>
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -223,6 +236,7 @@ function OfferOnANewItemDialog() {
     currency: 'EUR',
     description: '',
   })
+  const [image, setImage] = useState<Blob | null>(null)
 
   // An existing request for this exact item is not a suggestion but an answer: the offer
   // would land on it anyway, and the request page is where its demand can be read first.
@@ -263,6 +277,7 @@ function OfferOnANewItemDialog() {
         pricePerUnit: form.pricePerUnit,
         currency: form.currency,
         description: form.description,
+        image,
       }),
     )
     setSaving(false)
@@ -451,6 +466,16 @@ function OfferOnANewItemDialog() {
               </FieldDescription>
             </Field>
 
+            <Field>
+              <FieldLabel htmlFor="offerItemImage">Picture (optional)</FieldLabel>
+              <ImageField id="offerItemImage" value={image} onChange={setImage} disabled={saving} />
+              <FieldDescription>
+                Stays with your offer — buyers and the reviewing admin see it, rival sellers
+                do not. It does not become the item's own picture: the request you open here
+                is listed without one until a buyer adds it.
+              </FieldDescription>
+            </Field>
+
             <ErrorAlert title="Could not submit this offer">{formError}</ErrorAlert>
 
             <DialogFooter>
@@ -477,6 +502,9 @@ function NewRequestDialog() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [form, setForm] = useState({ itemName: '', quantity: 1 })
+  // Kept apart from `form`: it is a file rather than a field, and it is not sent as
+  // JSON with the rest.
+  const [image, setImage] = useState<Blob | null>(null)
 
   // An open request already carrying this exact item is not a suggestion, it is an
   // answer: there is no second request to make, only demand to join.
@@ -511,6 +539,7 @@ function NewRequestDialog() {
     setOpen(false)
     setFormError(null)
     setForm({ itemName: '', quantity: 1 })
+    setImage(null)
     toast.success(title, { description })
   }
 
@@ -518,7 +547,7 @@ function NewRequestDialog() {
     event.preventDefault()
     setSaving(true)
     setFormError(null)
-    const result = await dispatch(createRequest(form))
+    const result = await dispatch(createRequest({ ...form, image }))
     setSaving(false)
     if (createRequest.fulfilled.match(result)) {
       done('Request created', 'Other buyers can now join it.')
@@ -545,6 +574,7 @@ function NewRequestDialog() {
       setOpen(false)
       setFormError(null)
       setForm({ itemName: '', quantity: 1 })
+      setImage(null)
       toast.success('You joined an existing request', {
         description: `Your ${form.quantity} joined the demand for ${request.itemName}.`,
       })
@@ -646,6 +676,14 @@ function NewRequestDialog() {
               />
               <FieldDescription>
                 Yours alone — joining buyers add theirs on top.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="requestImage">Picture (optional)</FieldLabel>
+              <ImageField id="requestImage" value={image} onChange={setImage} disabled={saving} />
+              <FieldDescription>
+                What you are looking for, if a picture says it better than the name does.
               </FieldDescription>
             </Field>
 

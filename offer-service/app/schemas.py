@@ -116,6 +116,11 @@ class OfferOut(BaseModel):
     created_at: datetime = Field(serialization_alias="createdAt")
     updated_at: datetime = Field(serialization_alias="updatedAt")
 
+    # Whether /api/offers/{id}/image will answer with a picture. A flag and not the
+    # bytes: an admin queue of twenty offers would otherwise be twenty megabytes to
+    # render a list that shows none of them.
+    has_image: bool = Field(default=False, serialization_alias="hasImage")
+
     @classmethod
     def of(cls, offer: Offer) -> "OfferOut":
         return cls(
@@ -129,6 +134,9 @@ class OfferOut(BaseModel):
             status=offer.status,
             created_at=offer.created_at,
             updated_at=offer.updated_at,
+            # The media type is stored on the offer precisely so this needs no join: it
+            # is empty for every offer that carries no picture.
+            has_image=bool(offer.image_type),
         )
 
 

@@ -22,6 +22,8 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
+import { ImageField } from '@/components/image-field'
+import { OfferImage, RequestImage } from '@/components/item-image'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -38,6 +40,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Textarea } from '@/components/ui/textarea'
+import { useOfferImage } from '@/api/images'
 import { isFullOffer, type Offer } from '@/api/types'
 import { useAppDispatch, useAppSelector } from '@/store'
 import { cancelOffer, createOffer, fetchOffersForRequest, updateOffer } from '@/store/offersSlice'
@@ -119,6 +122,16 @@ export default function RequestDetail() {
         <StatusBadge status={request.status ?? 'OPEN'} />
       </div>
 
+      {/* Larger here than in the browse list: this is the page a buyer opens to decide
+          whether this is the thing they meant, and the picture is most of that answer.
+          Bounded rather than full width, because a photograph stretched across a wide
+          screen is not more informative, only louder. */}
+      <RequestImage
+        requestId={request.requestId}
+        hasImage={request.hasImage}
+        className="max-h-72 w-full max-w-md rounded-xl"
+      />
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat icon={<UsersIcon />} label="Buyers" value={request.totalCustomers} />
         <Stat icon={<PackageIcon />} label="Units wanted" value={request.totalQuantity} />
@@ -185,7 +198,16 @@ export default function RequestDetail() {
             {offers.map((offer) => (
               <Card key={offer.offerId} size="sm">
                 <CardContent className="flex items-center justify-between gap-4">
-                  <div className="min-w-0 space-y-0.5">
+                  {/* Nothing for a competing offer: its projection carries no hasImage,
+                      and the endpoint would refuse a rival anyway - a product photo can
+                      name its seller as surely as the withheld sellerId would. */}
+                  <OfferImage
+                    offerId={offer.offerId}
+                    hasImage={isFullOffer(offer) ? offer.hasImage : false}
+                    version={isFullOffer(offer) ? offer.updatedAt : undefined}
+                    className="size-16 shrink-0"
+                  />
+                  <div className="min-w-0 flex-1 space-y-0.5">
                     <p className="font-medium tabular-nums">
                       {offer.availableQuantity} units · {offer.pricePerUnit} {offer.currency}
                     </p>
@@ -389,6 +411,13 @@ function OfferForm({
     currency: mine?.currency ?? 'EUR',
     description: mine?.description ?? '',
   })
+  // Only a newly chosen file. An offer that already carries a picture shows it through
+  // initialPreviewUrl instead, because the bytes stay on the server unless replaced -
+  // sending nothing here means "leave it alone", not "delete it".
+  const [image, setImage] = useState<Blob | null>(null)
+  // The picture this offer already carries, if any. Fetched with the token rather than
+  // pointed at by the <img>, because an offer's image is not public - see api/images.
+  const existingImage = useOfferImage(mine?.offerId, Boolean(mine?.hasImage), mine?.updatedAt)
 
   // An approved offer is frozen: contact permission may already have been granted
   // against exactly these terms, so changing them would change what the admin approved.
@@ -404,13 +433,14 @@ function OfferForm({
     event.preventDefault()
     setSaving(true)
     const result = mine
-      ? await dispatch(updateOffer({ offerId: mine.offerId!, body: form }))
-      : await dispatch(createOffer({ requestId, ...form }))
+      ? await dispatch(updateOffer({ offerId: mine.offerId!, body: form, image }))
+      : await dispatch(createOffer({ requestId, ...form, image }))
     setSaving(false)
 
     // Every one of these reports failure into the slice's error, which the page already
     // shows above.
     if (result.type.endsWith('/rejected')) return
+    setImage(null)
     dispatch(fetchOffersForRequest(requestId))
     toast.success(mine ? 'Offer updated' : 'Offer submitted', {
       description: 'An administrator reviews it next.',
@@ -492,6 +522,24 @@ function OfferForm({
               />
               <FieldDescription>
                 What the buyers get for that price — lead time, condition, warranty.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="offerImage">Picture (optional)</FieldLabel>
+              <ImageField
+                id="offerImage"
+                value={image}
+                onChange={setImage}
+                // The picture the offer already carries. Choosing a new file replaces
+                // it; choosing none leaves it exactly as it is.
+                initialPreviewUrl={existingImage}
+                disabled={!editable || saving}
+              />
+              <FieldDescription>
+                Stays with your offer — buyers and the reviewing admin see it, rival sellers
+                do not. The picture of the item itself belongs to the request, and is the
+                buyers' to add.
               </FieldDescription>
             </Field>
 

@@ -2,7 +2,7 @@
 
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
-import { api, ApiError } from '@/api/client'
+import { api, ApiError, multipart } from '@/api/client'
 import type { CreateRequestBody, PurchaseRequest, RequestStatus } from '@/api/types'
 import type { RootState } from './index'
 
@@ -84,13 +84,17 @@ export const fetchSimilarRequests = createAsyncThunk<PurchaseRequest[], string>(
 
 export const createRequest = createAsyncThunk<
   PurchaseRequest,
-  CreateRequestBody,
+  // The picture travels beside the fields rather than in them: it is a file, and
+  // CreateRequestBody is the JSON the service validates.
+  CreateRequestBody & { image?: Blob | null },
   { state: RootState; rejectValue: CreateRejection }
->('requests/create', async (body, { getState, rejectWithValue }) => {
+>('requests/create', async ({ image, ...body }, { getState, rejectWithValue }) => {
   try {
     return await api<PurchaseRequest>('/api/requests', {
       method: 'POST',
-      body,
+      // Always multipart, whether or not a picture was chosen, so the form has one
+      // request path to get right rather than two. The service accepts both.
+      body: multipart(body, image ?? null),
       token: tokenOf(getState()),
     })
   } catch (error) {

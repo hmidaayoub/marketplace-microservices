@@ -3,6 +3,7 @@ import { ContactIcon, ReceiptTextIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { ErrorAlert } from '@/components/error-alert'
+import { OfferImage } from '@/components/item-image'
 import { PageHeader } from '@/components/page-header'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -59,7 +60,15 @@ export default function MyOffers() {
           {mine.map((offer) => (
             <Card key={offer.offerId} size="sm">
               <CardContent className="flex flex-wrap items-center justify-between gap-4">
-                <div className="min-w-0 space-y-0.5">
+                {/* Every offer here is the caller's own, so the projection that hides a
+                    rival's picture never applies: what a seller sent, a seller sees. */}
+                <OfferImage
+                  offerId={offer.offerId}
+                  hasImage={offer.hasImage}
+                  version={offer.updatedAt}
+                  className="size-14 shrink-0"
+                />
+                <div className="min-w-0 flex-1 space-y-0.5">
                   <p className="font-medium tabular-nums">
                     {offer.availableQuantity} units · {offer.pricePerUnit} {offer.currency}
                   </p>

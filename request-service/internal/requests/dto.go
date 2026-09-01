@@ -69,6 +69,12 @@ type requestResponse struct {
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 
+	// Whether /api/requests/{id}/image will answer with a picture. A flag and not the
+	// bytes, and not a URL either: the bytes would make a browse page of twenty
+	// requests twenty megabytes, and a URL the client can already build from the id it
+	// holds is a second thing to keep in step with the routing table.
+	HasImage bool `json:"hasImage"`
+
 	// How close this request's item name is to the one that was searched for, 0 to 1.
 	// Carried only by the near-match endpoints, so the caller can order and explain the
 	// suggestions rather than being handed an unranked list.
@@ -113,6 +119,9 @@ func toResponse(r store.PurchaseRequest) requestResponse {
 		TotalOffers:    r.TotalOffers,
 		CreatedAt:      r.CreatedAt,
 		UpdatedAt:      r.UpdatedAt,
+		// The media type is stored on the request precisely so this does not need a
+		// join: it is empty for every request that carries no picture.
+		HasImage: r.ImageType != "",
 	}
 	// The owner is a customerId, which participants already learn nothing else from -
 	// it is the same identifier the request is keyed by internally, and knowing who
