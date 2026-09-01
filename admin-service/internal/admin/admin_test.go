@@ -243,8 +243,13 @@ func TestPendingQueueIsServedFromOfferService(t *testing.T) {
 	h := newHarness(t)
 	_, adminToken := h.adminToken()
 	_, sellerID, _ := h.newSeller()
-	h.newOffer(sellerID, h.newCustomer("+21611111111"))
+	waiting, _ := h.newOffer(sellerID, h.newCustomer("+21611111111"))
 	decided, _ := h.newOffer(sellerID, h.newCustomer("+21622222222"))
+
+	// The seller sent a picture of what they are selling. This service never handles
+	// the bytes - the admin's browser reads those from offer-service - but the flag has
+	// to survive the relay, or the queue cannot say there is anything to look at.
+	h.givePicture(waiting)
 
 	if res := h.approve(adminToken, decided); res.code != http.StatusCreated {
 		t.Fatalf("approve: status %d body %s", res.code, res.raw)
@@ -256,6 +261,9 @@ func TestPendingQueueIsServedFromOfferService(t *testing.T) {
 	}
 	if len(res.list) != 1 {
 		t.Fatalf("pending queue has %d offers, want 1 (the decided one must drop out): %s", len(res.list), res.raw)
+	}
+	if res.list[0]["hasImage"] != true {
+		t.Errorf("hasImage = %v, want true - the picture flag must reach the queue: %s", res.list[0]["hasImage"], res.raw)
 	}
 }
 

@@ -69,6 +69,9 @@ export interface paths {
          *     makes it demand again. A merely similar
          *     name is not refused - see /api/requests/similar, which is what the
          *     new-request form shows while the name is being typed.
+         *     A picture of the item is optional. Send the body as multipart/form-data
+         *     with the JSON in a "payload" part and the file in an "image" part; a
+         *     plain application/json body works exactly as before.
          */
         post: {
             parameters: {
@@ -81,6 +84,7 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": Record<string, never> | components["schemas"]["requests.createRequestBody"];
+                    "multipart/form-data": Record<string, never>;
                 };
             };
             responses: {
@@ -297,6 +301,58 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["httpx.ErrorBody"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/requests/{requestId}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The picture of a request's item
+         * @description Answers 404 when the request carries no picture, which is the ordinary
+         *     case - clients read hasImage on the request rather than probing here.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Request id */
+                    requestId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": Record<string, never>;
+                    };
+                };
+                /** @description No such request, or it has no picture */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": components["schemas"]["httpx.ErrorBody"];
                     };
                 };
             };
@@ -598,6 +654,13 @@ export interface components {
              *     only joining is - so the form can say so before the customer finds out from a 409.
              */
             exact?: boolean;
+            /**
+             * @description Whether /api/requests/{id}/image will answer with a picture. A flag and not the
+             *     bytes, and not a URL either: the bytes would make a browse page of twenty
+             *     requests twenty megabytes, and a URL the client can already build from the id it
+             *     holds is a second thing to keep in step with the routing table.
+             */
+            hasImage?: boolean;
             itemName?: string;
             requestId?: string;
             /**

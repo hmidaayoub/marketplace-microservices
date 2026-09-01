@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -40,7 +41,7 @@ func (q *Queries) AddParticipant(ctx context.Context, arg AddParticipantParams) 
 const createRequest = `-- name: CreateRequest :one
 INSERT INTO purchase_request (item_name, description, category, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers
+RETURNING request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers, image_type
 `
 
 type CreateRequestParams struct {
@@ -70,6 +71,7 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (P
 		&i.UpdatedAt,
 		&i.CreatedBy,
 		&i.TotalOffers,
+		&i.ImageType,
 	)
 	return i, err
 }
@@ -93,7 +95,7 @@ func (q *Queries) DeleteParticipant(ctx context.Context, arg DeleteParticipantPa
 }
 
 const findRequestByItemName = `-- name: FindRequestByItemName :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers, image_type FROM purchase_request
 WHERE request_item_key(item_name) = request_item_key($1::text)
 ORDER BY (status = 'OPEN') DESC, created_at, request_id
 LIMIT 1
@@ -129,12 +131,13 @@ func (q *Queries) FindRequestByItemName(ctx context.Context, itemName string) (P
 		&i.UpdatedAt,
 		&i.CreatedBy,
 		&i.TotalOffers,
+		&i.ImageType,
 	)
 	return i, err
 }
 
 const findSimilarRequests = `-- name: FindSimilarRequests :many
-SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers,
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers, pr.image_type,
        similarity(request_item_key(pr.item_name), request_item_key($1::text)) AS score,
        -- The same name, not merely a close one. Carried so a caller can tell the two
        -- refusals apart: a near-match may be overridden, an exact one may not.
@@ -223,6 +226,7 @@ func (q *Queries) FindSimilarRequests(ctx context.Context, arg FindSimilarReques
 			&i.PurchaseRequest.UpdatedAt,
 			&i.PurchaseRequest.CreatedBy,
 			&i.PurchaseRequest.TotalOffers,
+			&i.PurchaseRequest.ImageType,
 			&i.Score,
 			&i.Exact,
 			&i.Contains,
@@ -261,7 +265,7 @@ func (q *Queries) GetParticipant(ctx context.Context, arg GetParticipantParams) 
 }
 
 const getRequest = `-- name: GetRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers, image_type FROM purchase_request
 WHERE request_id = $1
 `
 
@@ -280,7 +284,30 @@ func (q *Queries) GetRequest(ctx context.Context, requestID uuid.UUID) (Purchase
 		&i.UpdatedAt,
 		&i.CreatedBy,
 		&i.TotalOffers,
+		&i.ImageType,
 	)
+	return i, err
+}
+
+const getRequestImage = `-- name: GetRequestImage :one
+SELECT ri.image_data, ri.updated_at, pr.image_type
+FROM request_image ri
+JOIN purchase_request pr ON pr.request_id = ri.request_id
+WHERE ri.request_id = $1
+`
+
+type GetRequestImageRow struct {
+	ImageData []byte
+	UpdatedAt time.Time
+	ImageType string
+}
+
+// Serves GET /api/requests/{id}/image. The media type comes from the request row so one
+// read answers the whole response, headers included.
+func (q *Queries) GetRequestImage(ctx context.Context, requestID uuid.UUID) (GetRequestImageRow, error) {
+	row := q.db.QueryRow(ctx, getRequestImage, requestID)
+	var i GetRequestImageRow
+	err := row.Scan(&i.ImageData, &i.UpdatedAt, &i.ImageType)
 	return i, err
 }
 
@@ -311,7 +338,7 @@ func (q *Queries) ListParticipantCustomerIDs(ctx context.Context, requestID uuid
 }
 
 const listRequests = `-- name: ListRequests :many
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers, image_type FROM purchase_request
 WHERE ($1::text IS NULL
        OR item_name ILIKE '%' || $1::text || '%')
   AND ($2::text IS NULL
@@ -357,6 +384,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 			&i.UpdatedAt,
 			&i.CreatedBy,
 			&i.TotalOffers,
+			&i.ImageType,
 		); err != nil {
 			return nil, err
 		}
@@ -369,7 +397,7 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]P
 }
 
 const listRequestsByCustomer = `-- name: ListRequestsByCustomer :many
-SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers FROM purchase_request pr
+SELECT pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers, pr.image_type FROM purchase_request pr
 JOIN request_participant rp ON rp.request_id = pr.request_id
 WHERE rp.customer_id = $1
 ORDER BY rp.joined_at DESC
@@ -396,6 +424,7 @@ func (q *Queries) ListRequestsByCustomer(ctx context.Context, customerID uuid.UU
 			&i.UpdatedAt,
 			&i.CreatedBy,
 			&i.TotalOffers,
+			&i.ImageType,
 		); err != nil {
 			return nil, err
 		}
@@ -421,7 +450,7 @@ func (q *Queries) LockItemName(ctx context.Context, itemName string) error {
 }
 
 const lockRequest = `-- name: LockRequest :one
-SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers FROM purchase_request
+SELECT request_id, item_name, description, category, status, total_customers, total_quantity, created_at, updated_at, created_by, total_offers, image_type FROM purchase_request
 WHERE request_id = $1
 FOR UPDATE
 `
@@ -443,6 +472,7 @@ func (q *Queries) LockRequest(ctx context.Context, requestID uuid.UUID) (Purchas
 		&i.UpdatedAt,
 		&i.CreatedBy,
 		&i.TotalOffers,
+		&i.ImageType,
 	)
 	return i, err
 }
@@ -463,7 +493,7 @@ FROM (
     WHERE request_id = $1
 ) d
 WHERE pr.request_id = $1
-RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers
+RETURNING pr.request_id, pr.item_name, pr.description, pr.category, pr.status, pr.total_customers, pr.total_quantity, pr.created_at, pr.updated_at, pr.created_by, pr.total_offers, pr.image_type
 `
 
 // R4: the service, not the caller, owns totalCustomers and totalQuantity. Recomputed
@@ -493,6 +523,7 @@ func (q *Queries) RecalculateDemand(ctx context.Context, requestID uuid.UUID) (P
 		&i.UpdatedAt,
 		&i.CreatedBy,
 		&i.TotalOffers,
+		&i.ImageType,
 	)
 	return i, err
 }
@@ -516,6 +547,47 @@ type SetOfferCountParams struct {
 // RecalculateDemand, which the service calls next in the same transaction.
 func (q *Queries) SetOfferCount(ctx context.Context, arg SetOfferCountParams) error {
 	_, err := q.db.Exec(ctx, setOfferCount, arg.TotalOffers, arg.RequestID)
+	return err
+}
+
+const setRequestImage = `-- name: SetRequestImage :exec
+INSERT INTO request_image (request_id, image_data, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (request_id) DO UPDATE
+SET image_data = EXCLUDED.image_data,
+    updated_at = now()
+`
+
+type SetRequestImageParams struct {
+	RequestID uuid.UUID
+	ImageData []byte
+}
+
+// The picture of the item, stored apart from the request so that browsing a hundred
+// requests does not read a hundred images. Upserted rather than inserted: replacing the
+// picture is the same act as adding one, and a request holds at most one.
+//
+// The media type goes onto the request row in the same statement pair, because that is
+// the half every reader needs and this is the half only the image endpoint does.
+func (q *Queries) SetRequestImage(ctx context.Context, arg SetRequestImageParams) error {
+	_, err := q.db.Exec(ctx, setRequestImage, arg.RequestID, arg.ImageData)
+	return err
+}
+
+const setRequestImageType = `-- name: SetRequestImageType :exec
+UPDATE purchase_request
+SET image_type = $1,
+    updated_at = now()
+WHERE request_id = $2
+`
+
+type SetRequestImageTypeParams struct {
+	ImageType string
+	RequestID uuid.UUID
+}
+
+func (q *Queries) SetRequestImageType(ctx context.Context, arg SetRequestImageTypeParams) error {
+	_, err := q.db.Exec(ctx, setRequestImageType, arg.ImageType, arg.RequestID)
 	return err
 }
 

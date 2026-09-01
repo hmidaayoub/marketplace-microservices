@@ -34,6 +34,13 @@ type PurchaseRequest struct {
 	UpdatedAt      time.Time
 	CreatedBy      pgtype.UUID
 	TotalOffers    int32
+	ImageType      string
+}
+
+type RequestImage struct {
+	RequestID uuid.UUID
+	ImageData []byte
+	UpdatedAt time.Time
 }
 
 type RequestParticipant struct {

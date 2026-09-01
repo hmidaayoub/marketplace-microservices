@@ -278,7 +278,10 @@ async def client(
         # Handed to tests that need to drive a drain or read the wake count.
         http_client.relay = app.state.relay
         async with get_engine().begin() as connection:
-            await connection.execute(text("TRUNCATE offer, notification_outbox"))
+            # offer_image is named explicitly rather than reached through CASCADE:
+            # a truncate that cascades silently empties whatever comes to reference
+            # these tables next, and this list is meant to be read.
+            await connection.execute(text("TRUNCATE offer, offer_image, notification_outbox"))
         yield http_client
 
 

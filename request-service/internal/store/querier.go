@@ -61,6 +61,9 @@ type Querier interface {
 	FindSimilarRequests(ctx context.Context, arg FindSimilarRequestsParams) ([]FindSimilarRequestsRow, error)
 	GetParticipant(ctx context.Context, arg GetParticipantParams) (RequestParticipant, error)
 	GetRequest(ctx context.Context, requestID uuid.UUID) (PurchaseRequest, error)
+	// Serves GET /api/requests/{id}/image. The media type comes from the request row so one
+	// read answers the whole response, headers included.
+	GetRequestImage(ctx context.Context, requestID uuid.UUID) (GetRequestImageRow, error)
 	ListParticipantCustomerIDs(ctx context.Context, requestID uuid.UUID) ([]uuid.UUID, error)
 	ListRequests(ctx context.Context, arg ListRequestsParams) ([]PurchaseRequest, error)
 	ListRequestsByCustomer(ctx context.Context, customerID uuid.UUID) ([]PurchaseRequest, error)
@@ -92,6 +95,14 @@ type Querier interface {
 	// It writes the column and nothing else. The status that depends on it is left to
 	// RecalculateDemand, which the service calls next in the same transaction.
 	SetOfferCount(ctx context.Context, arg SetOfferCountParams) error
+	// The picture of the item, stored apart from the request so that browsing a hundred
+	// requests does not read a hundred images. Upserted rather than inserted: replacing the
+	// picture is the same act as adding one, and a request holds at most one.
+	//
+	// The media type goes onto the request row in the same statement pair, because that is
+	// the half every reader needs and this is the half only the image endpoint does.
+	SetRequestImage(ctx context.Context, arg SetRequestImageParams) error
+	SetRequestImageType(ctx context.Context, arg SetRequestImageTypeParams) error
 	UpdateParticipantQuantity(ctx context.Context, arg UpdateParticipantQuantityParams) (RequestParticipant, error)
 }
 

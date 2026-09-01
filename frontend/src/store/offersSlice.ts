@@ -2,7 +2,7 @@
 
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
-import { api, ApiError } from '@/api/client'
+import { api, ApiError, multipart } from '@/api/client'
 import type { AnyOffer, Offer, OfferCreate, OfferUpdate } from '@/api/types'
 import type { RootState } from './index'
 
@@ -50,11 +50,15 @@ export const fetchOffersForRequest = createAsyncThunk<AnyOffer[], string, { stat
 
 export const createOffer = createAsyncThunk<
   Offer,
-  OfferCreate,
+  OfferCreate & { image?: Blob | null },
   { state: RootState; rejectValue: CreateRejection }
->('offers/create', async (body, { getState, rejectWithValue }) => {
+>('offers/create', async ({ image, ...body }, { getState, rejectWithValue }) => {
   try {
-    return await api<Offer>('/api/offers', { method: 'POST', body, token: tokenOf(getState()) })
+    return await api<Offer>('/api/offers', {
+      method: 'POST',
+      body: multipart(body, image ?? null),
+      token: tokenOf(getState()),
+    })
   } catch (error) {
     return rejectWithValue({
       message: error instanceof ApiError ? error.message : 'Could not submit offer',
@@ -66,13 +70,16 @@ export const createOffer = createAsyncThunk<
 /** Changing the terms of an offer already made. Only a PENDING offer accepts this. */
 export const updateOffer = createAsyncThunk<
   Offer,
-  { offerId: string; body: OfferUpdate },
+  { offerId: string; body: OfferUpdate; image?: Blob | null },
   { state: RootState; rejectValue: string }
->('offers/update', async ({ offerId, body }, { getState, rejectWithValue }) => {
+>('offers/update', async ({ offerId, body, image }, { getState, rejectWithValue }) => {
   try {
     return await api<Offer>(`/api/offers/${offerId}`, {
       method: 'PUT',
-      body,
+      // No picture chosen means the offer keeps the one it has. The service reads an
+      // absent image part as "leave it alone" rather than as a delete, so a seller
+      // editing a price does not have to re-upload what they already sent.
+      body: multipart(body, image ?? null),
       token: tokenOf(getState()),
     })
   } catch (error) {

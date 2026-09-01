@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -105,6 +106,16 @@ type CreateInput struct {
 	// already holds - and it has to reach this far in, because the event is written
 	// inside the same transaction as the request itself.
 	ActorUserID uuid.UUID
+
+	// An optional picture of the item, already sniffed and accepted by the handler.
+	// Both fields or neither: ImageType is what every reader uses to decide whether a
+	// picture exists, so storing bytes without it would hide them, and storing a type
+	// without bytes would promise an image the endpoint cannot serve.
+	//
+	// It is written inside the create transaction rather than by a second call, so a
+	// request never exists in a state where its picture is still on its way.
+	Image     []byte
+	ImageType string
 }
 
 // EnsureInput describes an item to find or open a request for. There is no quantity:
@@ -180,6 +191,10 @@ func (s *Service) Create(
 			Quantity:   in.Quantity,
 		}); err != nil {
 			return fmt.Errorf("adding creator as participant: %w", err)
+		}
+
+		if err := storeImage(ctx, q, request.RequestID, in.Image, in.ImageType); err != nil {
+			return err
 		}
 
 		created, err = q.RecalculateDemand(ctx, request.RequestID)
@@ -521,4 +536,40 @@ func optionalText(v string) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return pgtype.Text{String: v, Valid: true}
+}
+
+// storeImage writes a request's picture and the media type that describes it, or does
+// nothing at all when there is no picture. The two writes travel together for the
+// reason CreateInput gives: separately, either one alone describes a request that does
+// not exist - bytes nothing will serve, or a promise of bytes that are not there.
+func storeImage(
+	ctx context.Context, q *store.Queries, requestID uuid.UUID, image []byte, imageType string,
+) error {
+	if len(image) == 0 {
+		return nil
+	}
+	if err := q.SetRequestImage(ctx, store.SetRequestImageParams{
+		RequestID: requestID,
+		ImageData: image,
+	}); err != nil {
+		return fmt.Errorf("storing request image: %w", err)
+	}
+	if err := q.SetRequestImageType(ctx, store.SetRequestImageTypeParams{
+		RequestID: requestID,
+		ImageType: imageType,
+	}); err != nil {
+		return fmt.Errorf("storing request image type: %w", err)
+	}
+	return nil
+}
+
+// Image returns the stored picture and the media type to serve it as. pgx.ErrNoRows
+// means the request carries no picture - or does not exist; the handler answers 404
+// either way, because a request without an image has nothing here to distinguish.
+func (s *Service) Image(ctx context.Context, requestID uuid.UUID) ([]byte, string, time.Time, error) {
+	row, err := s.queries.GetRequestImage(ctx, requestID)
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	return row.ImageData, row.ImageType, row.UpdatedAt, nil
 }

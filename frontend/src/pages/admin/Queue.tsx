@@ -13,6 +13,7 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ErrorAlert } from '@/components/error-alert'
+import { OfferImage } from '@/components/item-image'
 import { PageHeader } from '@/components/page-header'
 import {
   AlertDialog,
@@ -134,7 +135,17 @@ function PendingOfferCard({
     <Card>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-0.5">
+          {/* What is actually being sold. An admin decides whether these terms are the
+              best answer to the demand, and approving also releases the buyers' phone
+              numbers - so a picture that does not match the description is exactly the
+              thing this queue exists to catch. Fetched with the admin's own token:
+              offer-service serves it to a customer or an admin, never to a rival. */}
+          <OfferImage
+            offerId={offer.offerId}
+            hasImage={offer.hasImage}
+            className="size-24 shrink-0"
+          />
+          <div className="min-w-0 flex-1 space-y-0.5">
             <p className="font-heading text-base font-medium tabular-nums">
               {offer.availableQuantity} units · {offer.pricePerUnit} {offer.currency}
             </p>

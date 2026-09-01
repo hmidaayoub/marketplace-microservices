@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.events import KEY_OFFER_CREATED, enqueue
-from app.models import Offer, OfferStatus
+from app.models import Offer, OfferImage, OfferStatus
 from app.schemas import OfferCreate, OfferOut, OfferUpdate
 
 
@@ -62,6 +62,8 @@ async def create_offer(
     request_id: uuid.UUID,
     payload: OfferCreate,
     admin_user_ids: Sequence[uuid.UUID] = (),
+    image: bytes | None = None,
+    image_type: str = "",
 ) -> Offer:
     """R6: a new offer always starts PENDING. The caller cannot choose otherwise -
     status is not part of OfferCreate at all.
@@ -93,12 +95,23 @@ async def create_offer(
         currency=payload.currency,
         description=payload.description,
         status=OfferStatus.PENDING,
+        # Both or neither: image_type is what every reader uses to decide whether a
+        # picture exists, so bytes without it would be hidden and a type without bytes
+        # would promise an image the endpoint cannot serve.
+        image_type=image_type if image else "",
     )
     session.add(offer)
 
     # Flushed before the event is built so the offer's own columns are settled - the
-    # message quotes the terms an admin is being asked to review.
+    # message quotes the terms an admin is being asked to review. It is also what gives
+    # the offer the id its picture is keyed by.
     await session.flush()
+
+    # In this transaction rather than a call after it, so an offer never exists in a
+    # state where its picture is still on its way - and a submission refused as a
+    # duplicate leaves no orphaned image behind.
+    if image:
+        session.add(OfferImage(offer_id=offer.offer_id, image_data=image))
 
     enqueue(
         session,
@@ -194,7 +207,12 @@ async def list_pending(session: AsyncSession, limit: int, offset: int) -> Sequen
 
 
 async def update_offer(
-    session: AsyncSession, offer_id: uuid.UUID, seller_id: uuid.UUID, payload: OfferUpdate
+    session: AsyncSession,
+    offer_id: uuid.UUID,
+    seller_id: uuid.UUID,
+    payload: OfferUpdate,
+    image: bytes | None = None,
+    image_type: str = "",
 ) -> Offer:
     offer = await _own_pending_offer(session, offer_id, seller_id)
 
@@ -204,9 +222,46 @@ async def update_offer(
     offer.description = payload.description
     offer.updated_at = _now()
 
+    # No image in the body means the picture is untouched, not removed. The seller is
+    # editing terms in a form that shows the picture they already uploaded; re-sending
+    # it on every price change would be the client's work to do for no reason, and
+    # reading its absence as a delete would lose it by accident.
+    if image:
+        await _replace_image(session, offer, image, image_type)
+
     await session.commit()
     await session.refresh(offer)
     return offer
+
+
+async def _replace_image(
+    session: AsyncSession, offer: Offer, image: bytes, image_type: str
+) -> None:
+    """An offer shows one picture, so a new one replaces the old rather than joining it."""
+    existing = await session.get(OfferImage, offer.offer_id)
+    if existing is None:
+        session.add(OfferImage(offer_id=offer.offer_id, image_data=image))
+    else:
+        existing.image_data = image
+        existing.updated_at = _now()
+    offer.image_type = image_type
+
+
+async def offer_image(session: AsyncSession, offer_id: uuid.UUID) -> tuple[bytes, str, object]:
+    """The stored picture, the type to serve it as, and when it last changed.
+
+    Raises OfferNotFound when the offer has no picture - or does not exist. One answer
+    for both: there is nothing at that URL either way, and distinguishing them would
+    tell a caller which offer ids are real.
+    """
+    offer = await session.get(Offer, offer_id)
+    if offer is None or not offer.image_type:
+        raise OfferNotFound
+
+    stored = await session.get(OfferImage, offer_id)
+    if stored is None:
+        raise OfferNotFound
+    return stored.image_data, offer.image_type, stored.updated_at
 
 
 async def cancel_offer(session: AsyncSession, offer_id: uuid.UUID, seller_id: uuid.UUID) -> Offer:

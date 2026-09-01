@@ -22,8 +22,8 @@ seller service ever stores or returns one.
 | API Gateway | 8080 | — | Implemented (nginx) |
 | Swagger UI | 8080`/docs` | — | Aggregates all seven specs |
 
-369 tests pass in total: 87 across the four Maven modules, 125 across the two Go
-modules (86 request, 39 admin), and 157 across the two Python modules (91 offer,
+394 tests pass in total: 87 across the four Maven modules, 137 across the two Go
+modules (98 request, 39 admin), and 170 across the two Python modules (104 offer,
 66 notification).
 
 Every service in the spec is implemented, the notification events of section 18 flow
@@ -175,9 +175,12 @@ Endpoints deliberately return different shapes to different audiences:
 | `GET /api/sellers/me` | Full seller | — |
 | `GET /api/sellers/{id}` | `SellerPublicResponse` | **address, userId** |
 | `GET /api/requests/{id}` | Request plus demand totals | **participant customerIds** |
+| `GET /api/requests/{id}/image` | The item's picture, to anyone | — |
 | `GET /internal/requests/{id}/participants` | `customerIds` | — |
 | `GET /api/offers/{id}` (rival seller) | `CompetingOfferOut` | **sellerId** |
 | `GET /api/offers/{id}` (owner, customer, admin) | Full offer | — |
+| `GET /api/offers/{id}/image` (rival seller) | 404 | **the picture, and that there is one** |
+| `GET /api/offers/{id}/image` (owner, customer, admin) | The product's picture | — |
 | `GET /api/contacts/requests/{id}` (granted seller) | `customerId` + **phone** | everything else |
 | `GET /api/contacts/requests/{id}` (ungranted seller) | 403 | **the whole list** |
 | `GET /internal/contact-access` | `allowed` boolean | the grant records behind it |
@@ -192,6 +195,7 @@ who want it. Endpoints follow spec section 10.
 | `POST` | `/api/requests` | CUSTOMER |
 | `GET` | `/api/requests` | anyone, no token |
 | `GET` | `/api/requests/{requestId}` | anyone, no token |
+| `GET` | `/api/requests/{requestId}/image` | anyone, no token |
 | `GET` | `/api/requests/similar` | anyone, no token |
 | `GET` | `/api/requests/me` | CUSTOMER |
 | `POST` | `/api/requests/{requestId}/participants` | CUSTOMER |
@@ -228,6 +232,29 @@ Rules worth knowing:
   the same new item at once cannot both find nothing and both create. Because the name
   carries this weight, it is all the create form asks for besides a quantity; the
   description and category belong to whoever opened the request.
+- **A request may carry a picture of the item, and it is as public as the request.**
+  `POST /api/requests` accepts `multipart/form-data` — the JSON in a part named
+  `payload`, the file in a part named `image` — as well as the plain `application/json`
+  body it always took, so the smoke script, the Postman collection and offer-service's
+  internal calls are untouched by the feature. `GET /api/requests/{id}/image` needs no
+  token: a visitor has to see the demand before joining it, and a photograph of an
+  espresso machine is not participant data. The format is read from the bytes rather
+  than from the part's declared `Content-Type`, which is only a claim by the uploader —
+  JPEG, PNG and WebP are accepted and nothing else is. SVG is refused deliberately: it
+  is a document that can carry script, and serving one back from the platform's own
+  origin would be a stored XSS against everyone who viewed it. Uploads are capped at
+  1 MiB in the service, with the gateway refusing a larger body at the edge
+  (`client_max_body_size 2m`, the extra megabyte being room for the multipart framing
+  around the file) and a `CHECK` beneath both in the database. The bytes live in their
+  own `request_image` table rather than in a column on the request: `CreateRequest` and
+  `RecalculateDemand` both `RETURNING *`, so a `bytea` on the row would be read back on
+  every create and every browse page to render a list that shows none of it. What does
+  live on the request is the media type, which is what lets every response carry
+  `hasImage` without a join — the one thing about a picture a client cannot work out for
+  itself, since it builds the URL from the id it already holds. The response carries an
+  `ETag` built from the stored timestamp and `Cache-Control: private, max-age=300`. A
+  request has no update endpoint, so its picture is set when it is created or not at
+  all.
 - **Nothing is ever joined on the customer's behalf.** The refusal hands them a request;
   the join is their own call to `POST /api/requests/{id}/participants`. Being quietly
   enrolled in a stranger's request because a name collided is not what anybody asked for,
@@ -334,6 +361,7 @@ Owns seller proposals against aggregated demand (spec section 11).
 | `POST` | `/api/offers` | SELLER |
 | `GET` | `/api/offers/me` | SELLER |
 | `GET` | `/api/offers/{offerId}` | any authenticated user |
+| `GET` | `/api/offers/{offerId}/image` | CUSTOMER, ADMIN, or the offer's own seller |
 | `GET` | `/api/offers/request/{requestId}` | any authenticated user |
 | `PUT` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
 | `DELETE` | `/api/offers/{offerId}` | SELLER, owner, while PENDING |
@@ -392,6 +420,23 @@ Rules worth knowing:
   full offer; a rival seller gets `CompetingOfferOut`, which carries the price and
   quantity but withholds `sellerId`. Sellers still need the competitive field to price
   sensibly — they do not need the identity behind it.
+- **An offer may carry a picture of the product, and it obeys the projection the offer
+  does.** The body contract is request-service's, on both `POST /api/offers` and
+  `PUT /api/offers/{offerId}`: `multipart/form-data` with the fields in a `payload` part
+  and the file in an `image` part, or the plain JSON that always worked. The same three
+  formats, the same 1 MiB cap, the same reading of the bytes instead of the declared
+  type — `app/media.py` is the twin of request-service's `internal/media`, because a
+  picture the platform would refuse on a request is not one it should accept on an
+  offer. `GET /api/offers/{offerId}/image` is where the two part company: it takes a
+  token, and a rival seller asking for one gets a 404 rather than a picture. That is not
+  extra caution but the same rule as `CompetingOfferOut` withholding `sellerId` — a
+  product photo is not anonymous, and a shop sign, a watermark or a business card in
+  frame names the seller as surely as the field would. `OfferOut` carries `hasImage`,
+  which reaches the admin review queue through Admin/Contact's `pendingOfferResponse`;
+  only the flag is relayed, and the admin's browser reads the bytes from here, from the
+  service that decides who may see one. A `PUT` carrying no image part leaves the
+  existing picture alone — an absent part means "leave it", not "delete it", so a seller
+  editing a price does not have to re-upload a photograph.
 - **R7 is enforced upstream.** Admin/Contact authenticates the ADMIN and writes the
   audit record, then relays the outcome through the internal `PATCH`, which accepts only
   `APPROVED` or `REJECTED`. This service holds status, not authority. The internal

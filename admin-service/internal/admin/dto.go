@@ -86,6 +86,13 @@ type pendingOfferResponse struct {
 	Currency          string    `json:"currency"`
 	Description       string    `json:"description"`
 	Status            string    `json:"status"`
+
+	// Whether GET /api/offers/{id}/image will answer with a picture of the product.
+	// The queue is where an offer is judged, and what is being sold is part of that -
+	// but the bytes are not relayed through this service: the flag says a picture
+	// exists, and the admin's browser reads it from offer-service, which is the service
+	// that decides who may see one.
+	HasImage bool `json:"hasImage"`
 }
 
 func toDecisionResponse(d store.OfferDecision, contactsGranted int) decisionResponse {
@@ -138,6 +145,7 @@ func toPendingOfferResponses(offers []clients.Offer) []pendingOfferResponse {
 			Currency:          o.Currency,
 			Description:       o.Description,
 			Status:            o.Status,
+			HasImage:          o.HasImage,
 		})
 	}
 	return out
