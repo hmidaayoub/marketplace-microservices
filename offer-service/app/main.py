@@ -10,11 +10,11 @@ from sqlalchemy import text
 
 from app.clients import ServiceClients
 from app.config import get_settings
-from app.openapi import customise_openapi
 from app.db import dispose_engine, get_engine, get_sessionmaker
 from app.errors import register_exception_handlers
 from app.events import Publisher, Relay
 from app.migrate import run_migrations
+from app.openapi import customise_openapi
 from app.routers import internal, offers
 
 
@@ -78,9 +78,9 @@ def create_app() -> FastAPI:
         title="Offer Service",
         version="0.1.0",
         description=(
-            "Stores seller offers against purchase requests. Public API; the /internal endpoints are "
-            "deliberately absent, being service-to-service only with no route through "
-            "the gateway."
+            "Stores seller offers against purchase requests. Public API; the "
+            "/internal endpoints are deliberately absent, being service-to-service "
+            "only with no route through the gateway."
         ),
         lifespan=lifespan,
         # Relative, so the browser resolves a try-it-out call against whatever origin

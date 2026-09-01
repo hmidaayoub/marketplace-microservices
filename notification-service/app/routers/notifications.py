@@ -39,9 +39,7 @@ async def my_notifications(
     ]
 
 
-@router.get(
-    "/me/unread-count", response_model=None, responses={200: {"model": UnreadCountOut}}
-)
+@router.get("/me/unread-count", response_model=None, responses={200: {"model": UnreadCountOut}})
 async def my_unread_count(principal: CurrentPrincipal, session: SessionDep) -> dict[str, Any]:
     """Backs the unread badge. Counts PENDING and SENT but not FAILED: a notification
     that never reached the user is an operational problem, not an unread message."""
