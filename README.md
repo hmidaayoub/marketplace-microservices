@@ -28,10 +28,10 @@ modules (98 request, 39 admin), and 170 across the two Python modules (104 offer
 
 Every service in the spec is implemented, the notification events of section 18 flow
 between them over RabbitMQ, and the nine public routes of section 19 are served by the
-gateway. **8080 is the only port the platform publishes.** The seven services are
-reachable only from inside the compose network, which is what makes section 6's rule -
-`/internal` must not be exposed publicly - a property of the topology rather than a
-convention every service has to remember.
+gateway. **8080 is the only port the platform publishes.** The seven services, their seven
+databases and the broker are reachable only from inside the compose network, which is what
+makes section 6's rule - `/internal` must not be exposed publicly - a property of the
+topology rather than a convention every service has to remember.
 
 The platform is deliberately polyglot: Auth, Customer and Seller are Spring Boot,
 Request and Admin/Contact are Go, Offer and Notification are Python. They interoperate
@@ -612,16 +612,28 @@ docker compose up --build
 curl localhost:8080/api/requests      # everything public goes through :8080
 ```
 
-**Only 8080 is published.** The services have no `ports:` mapping, so the security boundary
-in development is the same one an Ingress enforces in production rather than a rule that
-only holds once deployed. Reaching a service directly — which the `/internal` and
-`/actuator` calls need, since neither is routable through the gateway — is opt-in:
+**8080 is the only port published.** Nothing else — not the seven services, their seven
+databases, the broker, the frontend or the Swagger UI — has a `ports:` mapping, so the
+security boundary in development is the same one an Ingress enforces in production rather
+than a rule that only holds once deployed. Reaching any of them directly — which the
+`/internal` and `/actuator` calls need, since neither is routable through the gateway — is
+opt-in:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.direct.yml up   # republishes 8081-8087
+docker compose -f docker-compose.yml -f docker-compose.direct.yml up   # 8081-8087, 5432-5438, 5672
 ```
 
 That is the compose equivalent of `kubectl port-forward`: forgetting it fails closed.
+
+The overlay covers the databases and the broker as well — 5432-5438 in the Status table's
+service order (auth 5432, customer 5433, seller 5434, request 5435, offer 5436, admin 5437,
+notification 5438), then 5672 and the RabbitMQ management console on 15672. Nothing in the
+platform reaches a database or the broker from the host; those ports serve a psql client, an
+external AMQP client, or the console, and nothing else. Keeping them out of the default also
+means the seven Postgres containers cannot collide with a Postgres already running on the
+host, which is the usual reason `up` fails on a fresh machine.
+
+So `docker compose up` occupies exactly one port. Everything else is opt-in.
 
 ### API documentation
 
