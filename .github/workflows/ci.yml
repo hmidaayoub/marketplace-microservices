@@ -160,3 +160,92 @@ jobs:
       # answer to the same question.
       - name: Test
         run: mvn -B -ntp test
+
+  # The four jobs above test the five toolchains apart. None of them builds an image,
+  # starts a service, or sends a request through the gateway - so the whole layer the
+  # platform actually ships as (eight Dockerfiles, one compose network, an nginx config
+  # holding the nine public routes) had no verdict at all. A change that breaks a build
+  # arg, a service name or a route passes them green and fails on the first `up`.
+  #
+  # This job is the one that assembles the thing and uses it.
+  stack:
+    name: stack (compose + smoke + e2e)
+    runs-on: ubuntu-latest
+    # Eight images from cold, then two browser flows. The unit jobs answer in under two
+    # minutes; this one is allowed to take its time because it is answering a different
+    # question.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # --wait holds until every healthcheck in the compose file reports healthy, and
+      # fails the step if one never does. The alternative - sleep, then curl - either
+      # wastes time or reports a flake as a failure, and the healthchecks that would
+      # make it right already exist.
+      - name: Build and start the platform
+        run: docker compose up --build -d --wait
+
+      # The end-to-end walk of the spec's interaction flows: two customers pool demand,
+      # a seller offers against the total, contacts are refused, an admin approves, and
+      # only then does a phone number come back. It also asserts the gateway boundary -
+      # that /internal and /actuator have no public route - which is the one property no
+      # unit test can check, because it is a fact about the topology and not about code.
+      - name: Smoke the platform through the gateway
+        run: ./scripts/smoke.sh
+
+      # Only chromium, and only here: the unit frontend job never opens a browser, so
+      # paying for the download in both would buy nothing.
+      - name: Install the browser the e2e flows drive
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # APP_URL, because the e2e scripts default to the Vite dev server on :5173 and
+      # what CI must check is the built image behind the gateway instead. These exist
+      # because "account creation did not work" was diagnosed three times from the
+      # outside while the API and the store both passed - they are the only checks that
+      # see what the user sees.
+      - name: E2E - a visitor with no account
+        working-directory: frontend
+        env:
+          APP_URL: http://localhost:8080
+          API_URL: http://localhost:8080
+        run: npm run e2e:public
+
+      - name: E2E - signup through to a request
+        working-directory: frontend
+        env:
+          APP_URL: http://localhost:8080
+        run: npm run e2e
+
+      # A red run here means a container is wrong, and the container logs are the only
+      # place that says how. Without this the failure reads as "curl got 502" and the
+      # reason stays inside a machine that is about to be destroyed.
+      - name: Container state and logs
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color --tail=200
+
+      # The e2e helpers screenshot the page at the step that failed. That image is worth
+      # more than the stack trace above it, so it leaves the runner.
+      - name: Failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-failure-screenshots
+          path: frontend/e2e/failure-*.png
+          if-no-files-found: ignore
+
+      # -v because the seven database volumes are the run's state: leaving them would
+      # make a rerun start from a machine that is no longer clean.
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
