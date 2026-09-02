@@ -1,4 +1,5 @@
-# Republishes the service ports that the default compose file deliberately withholds.
+# Republishes the service, database and broker ports that the default compose file
+# deliberately withholds. With this overlay off, :8080 is the only port on the host.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.direct.yml up
 #
@@ -9,6 +10,16 @@
 # rather than leaving the internal API exposed.
 #
 # The 82 /api requests do not need this - they go through the gateway either way.
+#
+# The databases are here for the same reason. Nothing in the platform reaches a database
+# from the host - services resolve each other by compose service name on the internal
+# network - so a published 5432 only ever serves a psql client or a GUI. Withholding it
+# by default also means seven Postgres containers cannot collide with a Postgres already
+# running on the host, which is the usual reason `up` fails on a fresh machine.
+#
+# RabbitMQ is here for the same reason: the services reach the broker over the internal
+# network, so 5672 on the host serves an external AMQP client, and 15672 the management
+# console - both debugging tools rather than anything the platform needs.
 services:
   auth-service:         {ports: ["8081:8081"]}
   customer-service:     {ports: ["8082:8082"]}
@@ -17,3 +28,13 @@ services:
   offer-service:        {ports: ["8085:8085"]}
   admin-service:        {ports: ["8086:8086"]}
   notification-service: {ports: ["8087:8087"]}
+
+  auth-db:              {ports: ["5432:5432"]}
+  customer-db:          {ports: ["5433:5432"]}
+  seller-db:            {ports: ["5434:5432"]}
+  request-db:           {ports: ["5435:5432"]}
+  offer-db:             {ports: ["5436:5432"]}
+  admin-db:             {ports: ["5437:5432"]}
+  notification-db:      {ports: ["5438:5432"]}
+
+  rabbitmq:             {ports: ["5672:5672", "15672:15672"]}

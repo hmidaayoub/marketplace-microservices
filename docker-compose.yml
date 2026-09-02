@@ -120,7 +120,6 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: marketplace
       RABBITMQ_DEFAULT_PASS: marketplace
-    ports: ["5672:5672", "15672:15672"]
     volumes: [rabbitmq_data:/var/lib/rabbitmq]
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
@@ -135,7 +134,6 @@ services:
       POSTGRES_DB: user_auth_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5432:5432"]
     volumes: [auth_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -145,7 +143,6 @@ services:
       POSTGRES_DB: customer_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5433:5432"]
     volumes: [customer_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -155,7 +152,6 @@ services:
       POSTGRES_DB: seller_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5434:5432"]
     volumes: [seller_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -165,7 +161,6 @@ services:
       POSTGRES_DB: request_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5435:5432"]
     volumes: [request_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -175,7 +170,6 @@ services:
       POSTGRES_DB: offer_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5436:5432"]
     volumes: [offer_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -185,7 +179,6 @@ services:
       POSTGRES_DB: admin_contact_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5437:5432"]
     volumes: [admin_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
@@ -195,7 +188,6 @@ services:
       POSTGRES_DB: notification_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-    ports: ["5438:5432"]
     volumes: [notification_db_data:/var/lib/postgresql/data]
     healthcheck: *db-healthcheck
 
