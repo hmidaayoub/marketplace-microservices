@@ -1,0 +1,197 @@
+# Findings that were already here when Trivy was switched on, and nothing else.
+#
+# Every entry carries an expiry. On 2026-12-01 they stop being ignored and the
+# security job goes red on its own - which is the point: this file is a dated
+# record of known debt, not a way to stop hearing about it. A CVE that is not
+# listed here has never been triaged and fails the build the first time it appears.
+#
+# Baselined 2026-09-03 against Trivy 0.74.0.
+
+vulnerabilities:
+  # --- Spring Boot 3.2.5 (April 2024) --------------------------------------
+  #
+  # The root pom pins spring-boot-starter-parent 3.2.5, and every one of the
+  # 39 entries below is a transitive consequence of that single version. They
+  # are not 39 separate decisions to make; they are one upgrade to 3.5.x,
+  # after which this whole block is deleted rather than renewed.
+  #
+  # 23 of them are the embedded Tomcat alone, which Spring Boot manages -
+  # bumping the parent moves it without a dependency declaration of our own.
+
+  # com.fasterxml.jackson.core:jackson-core (1 finding)
+  - id: GHSA-r7wm-3cxj-wff9
+    statement: "HIGH in com.fasterxml.jackson.core:jackson-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # com.fasterxml.jackson.core:jackson-databind (2 findings)
+  - id: CVE-2026-54512
+    statement: "HIGH in com.fasterxml.jackson.core:jackson-databind; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-54513
+    statement: "HIGH in com.fasterxml.jackson.core:jackson-databind; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # io.micrometer:micrometer-core (1 finding)
+  - id: CVE-2026-40984
+    statement: "HIGH in io.micrometer:micrometer-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.apache.tomcat.embed:tomcat-embed-core (23 findings, 7 critical)
+  - id: CVE-2024-34750
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2024-38286
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2024-50379
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2024-56337
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-24813
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-48988
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-48989
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-52520
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-53506
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2025-55752
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-24734
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-24880
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-34483
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-34487
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-41284
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-41293
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-42498
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-43512
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-43513
+    statement: "HIGH in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-43515
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-65182
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-65905
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-68525
+    statement: "CRITICAL in org.apache.tomcat.embed:tomcat-embed-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.postgresql:postgresql (1 finding)
+  - id: CVE-2026-42198
+    statement: "HIGH in org.postgresql:postgresql; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework.boot:spring-boot (1 finding)
+  - id: CVE-2025-22235
+    statement: "HIGH in org.springframework.boot:spring-boot; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework.boot:spring-boot-starter-actuator (1 finding)
+  - id: CVE-2026-22733
+    statement: "HIGH in org.springframework.boot:spring-boot-starter-actuator; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework.security:spring-security-crypto (1 finding)
+  - id: CVE-2025-22228
+    statement: "HIGH in org.springframework.security:spring-security-crypto; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework.security:spring-security-web (2 findings, 2 critical)
+  - id: CVE-2024-38821
+    statement: "CRITICAL in org.springframework.security:spring-security-web; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-22732
+    statement: "CRITICAL in org.springframework.security:spring-security-web; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework:spring-core (1 finding)
+  - id: CVE-2025-41249
+    statement: "HIGH in org.springframework:spring-core; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework:spring-expression (1 finding)
+  - id: CVE-2026-41850
+    statement: "HIGH in org.springframework:spring-expression; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # org.springframework:spring-webmvc (4 findings)
+  - id: CVE-2024-38816
+    statement: "HIGH in org.springframework:spring-webmvc; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2024-38819
+    statement: "HIGH in org.springframework:spring-webmvc; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-41842
+    statement: "HIGH in org.springframework:spring-webmvc; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+  - id: CVE-2026-41845
+    statement: "HIGH in org.springframework:spring-webmvc; fixed by the Spring Boot 3.2.5 -> 3.5.x upgrade."
+    expired_at: 2026-12-01
+
+  # --- Go: test-only, and not in anything that ships ------------------------
+  #
+  # Both are `// indirect` in request-service and admin-service, pulled in by
+  # Testcontainers' Docker client - which the suites use and the binaries do not.
+  # Confirmed rather than assumed: `trivy image` on the two Go images reports
+  # 0 HIGH and 0 CRITICAL, because neither package is linked into the binary.
+  # They are listed here so the go.mod scan stays on for everything else.
+  - id: CVE-2026-17106
+    statement: "HIGH in github.com/moby/go-archive; indirect, Testcontainers-only, absent from the shipped image."
+    expired_at: 2026-12-01
+  - id: CVE-2026-56854
+    statement: "CRITICAL in golang.org/x/crypto; indirect, Testcontainers-only, absent from the shipped image."
+    expired_at: 2026-12-01
+
+  # --- Base image: nginx:1.27-alpine ----------------------------------------
+  #
+  # Not ours to patch in a Dockerfile: the tag itself resolves to alpine 3.21.3,
+  # and a fresh pull today still carries it. nginx:1.29-alpine drops the image
+  # from 35 HIGH / 2 CRITICAL to 15 HIGH / 0 CRITICAL - the fix is to move the
+  # pin, in both frontend/Dockerfile and the gateway service in docker-compose.yml.
+  - id: CVE-2026-31789
+    statement: "CRITICAL in libcrypto3/libssl3 from nginx:1.27-alpine; fixed by moving the pin to nginx:1.29-alpine."
+    expired_at: 2026-12-01
+
+misconfigurations:
+  # The frontend image is the one of the eight that does not drop privileges,
+  # because the stock nginx entrypoint needs root to bind :80 and to write its
+  # pid and cache. Moving it to a non-root user means an unprivileged nginx on a
+  # high port, which changes the gateway upstream and the compose healthcheck
+  # with it - a real change, not a one-line Dockerfile edit, so it is dated here
+  # rather than done quietly.
+  - id: DS-0002
+    paths:
+      - "frontend/Dockerfile"
+    statement: "nginx runs as root; needs an unprivileged image and a port change, not a USER line."
+    expired_at: 2026-12-01

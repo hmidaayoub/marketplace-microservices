@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   frontend:
-    name: frontend
+    name: frontend (eslint + unit + component + build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -53,9 +53,31 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Lint
+      - name: ESLint
         run: npm run lint
 
+      # Two suites rather than one `vitest run`, because a red run should name which
+      # kind of thing broke without anyone opening the log. They split on the file
+      # extension - *.test.ts is logic, *.test.tsx is a component - so a test cannot
+      # land in the wrong one without changing the language it is written in.
+      #
+      # The logic suite: reducers, selectors, the API client and the refresh handler.
+      # No React and no rendering, so a failure here is a failure of the app's rules
+      # rather than of its markup.
+      - name: Unit tests
+        run: npm run test:unit
+
+      # The component suite: mounted with Testing Library and asserted through what a
+      # user can see. It is the layer between the units above and the e2e flows in the
+      # stack job - it catches the guard that redirects to the wrong place without
+      # paying for eight containers and a browser download to find out.
+      - name: Component tests
+        run: npm run test:component
+
+      # Last, because it is the slowest and the least specific: `tsc -b && vite build`
+      # re-runs the typecheck above and then produces the bundle the frontend image
+      # ships. What it adds over the steps before it is that the thing actually
+      # assembles - a bad import path or a missing asset fails here and nowhere else.
       - name: Build
         run: npm run build
 
@@ -168,6 +190,113 @@ jobs:
       - name: Test
         run: mvn -B -ntp test
 
+  # The four jobs above ask whether the code works. None of them asks whether what it
+  # depends on, or what it ships inside, is something you would want facing the
+  # internet - and that question has a different answer every week, because it moves
+  # when a CVE is published rather than when somebody commits. A branch that changed
+  # nothing can be less safe than it was yesterday, which is why this runs on every
+  # push and not only on the pushes that touch a manifest.
+  #
+  # Two tools with one job each, deliberately not overlapping. Trivy reads what is
+  # actually installed - dependency manifests here, and the eight built images over in
+  # the stack job. Checkov reads policy: Dockerfile and workflow rules. Where both have
+  # an opinion, which is secret detection, only one of them is asked; .checkov.yaml is
+  # where that choice is written down and argued.
+  security:
+    name: security (trivy + checkov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Only for the SARIF upload. That is what puts a finding on the Security tab
+      # against a file and a line, rather than leaving it in a job log that gets read
+      # once and only when it is already red. The repository is public, so code
+      # scanning needs no Advanced Security licence.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # The binary rather than aquasecurity/trivy-action, for two reasons. The baseline
+      # in .trivyignore.yaml was taken against exactly this version, and the four
+      # invocations below then share one downloaded vulnerability database instead of
+      # each step fetching its own.
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.74.0
+          trivy --version
+
+      # --ignore-unfixed is the difference between a gate and a nuisance. A CVE with no
+      # released fix is not something this branch can act on, and reporting it as a
+      # build failure means the only way back to green is to stop believing the tool.
+      # What is left is the set of findings a version bump would close today.
+      #
+      # HIGH and CRITICAL only, for the same reason: there are several hundred MEDIUM
+      # and LOW across the five toolchains, and a gate nobody can clear is a gate that
+      # gets deleted in a month.
+      #
+      # Secrets are scanned here and not by Checkov. Both can do it; on this repository
+      # Trivy reports zero and Checkov reports nine, all of them the documented dev
+      # values in docker-compose.yml and the Spring test resources. Two scanners means
+      # permanently suppressing one of them, so the accurate one keeps the job.
+      - name: Trivy - dependencies and secrets
+        run: |
+          mkdir -p sarif
+          trivy fs \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --ignorefile .trivyignore.yaml \
+            --skip-dirs frontend/node_modules \
+            --format sarif --output sarif/trivy-deps.sarif \
+            --exit-code 1 \
+            .
+
+      # !cancelled() rather than nothing, on this and the steps below: a job stops at
+      # its first failing step, and three security tools that only report while the
+      # ones before them pass would take three red runs to tell you what one could.
+      # The job still fails - every one of these still carries its own --exit-code.
+      #
+      # HIGH here too, which lets DS-0026 - five images carrying no HEALTHCHECK of
+      # their own - report at LOW without gating. Those five are health-checked in
+      # docker-compose.yml instead, and the images ship no curl or wget to do it with.
+      - name: Trivy - Dockerfile misconfiguration
+        if: '!cancelled()'
+        run: |
+          trivy fs \
+            --scanners misconfig \
+            --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore.yaml \
+            --skip-dirs frontend/node_modules \
+            --format sarif --output sarif/trivy-config.sarif \
+            --exit-code 1 \
+            .
+
+      # Pinned exactly, like setup-uv above and Trivy beside it. Checkov ships new
+      # policies continuously - a floating version means a rule published on Tuesday
+      # fails a branch that Monday's commit already passed, which is a fine property
+      # for a security report and a poor one for a build gate.
+      - name: Install Checkov
+        if: '!cancelled()'
+        run: pipx install checkov==3.3.16
+
+      # Everything it checks and everything it is told not to lives in .checkov.yaml,
+      # so this command is the same one a developer runs. It has no severity filter
+      # without a Prisma API key, which is why that file's skip list is the whole of
+      # the policy rather than a footnote to it.
+      - name: Checkov - Dockerfile and workflow policy
+        if: '!cancelled()'
+        run: checkov --config-file .checkov.yaml -o cli -o sarif --output-file-path console,sarif/checkov.sarif
+
+      # A directory, so all three reports upload in one call. if: !cancelled() because
+      # the run worth uploading is the failing one - a report that only publishes when
+      # there is nothing to report is not a report.
+      - name: Publish findings to the Security tab
+        if: '!cancelled()'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif
+
   # The four jobs above test the five toolchains apart. None of them builds an image,
   # starts a service, or sends a request through the gateway - so the whole layer the
   # platform actually ships as (eight Dockerfiles, one compose network, an nginx config
@@ -176,8 +305,12 @@ jobs:
   #
   # This job is the one that assembles the thing and uses it.
   stack:
-    name: stack (compose + smoke + e2e)
+    name: stack (compose + smoke + e2e + image scan)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # As in the security job: only to publish the image findings below.
+      security-events: write
     # Eight images from cold, then two browser flows. The unit jobs answer in under two
     # minutes; this one is allowed to take its time because it is answering a different
     # question.
@@ -196,6 +329,7 @@ jobs:
       # wastes time or reports a flake as a failure, and the healthchecks that would
       # make it right already exist.
       - name: Build and start the platform
+        id: build
         run: docker compose up --build -d --wait
 
       # The end-to-end walk of the spec's interaction flows: two customers pool demand,
@@ -231,6 +365,67 @@ jobs:
         env:
           APP_URL: http://localhost:8080
         run: npm run e2e
+
+      # The eight images the steps above just built and then proved actually work,
+      # scanned before the teardown deletes them.
+      #
+      # Here rather than in the security job because that job would have to build all
+      # eight again to see them, and after the smoke and e2e steps rather than before
+      # for the reason the python job gives for its own step order: a job stops at its
+      # first failing step, and an unpatched libssl must never hide whether the
+      # platform still works.
+      #
+      # CRITICAL, where the manifest scan a job above gates at HIGH. The difference is
+      # what a commit can actually do: a dependency is a version this repository picks,
+      # while most of what is left in a built image belongs to its base. A freshly
+      # pulled nginx:1.27-alpine carries 35 HIGH with fixes released and none of them
+      # reachable from a Dockerfile, so gating HIGH here would be gating on something
+      # no change to this repository could clear. They are still scanned, still printed
+      # and still uploaded - they are just not the build's verdict.
+      - name: Install Trivy
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin v0.74.0
+
+      # Not simply !cancelled(): a failed smoke or e2e run leaves eight built images
+      # that are still worth scanning, but a failed `up --build` leaves nothing to
+      # scan, and `trivy image` on a name compose never created would report the
+      # build's failure a second time in a less useful sentence.
+      - name: Trivy - the eight images this job built
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p sarif
+          rc=0
+          for svc in frontend auth-service customer-service seller-service \
+                     request-service offer-service admin-service notification-service; do
+            # Compose names an untagged build <project>-<service>, and the project name
+            # comes from the checkout directory. Asking compose is one fewer thing that
+            # breaks the day this repository is cloned under a different name.
+            img=$(docker compose images --format json "$svc" | jq -r '.[0].Repository + ":" + .[0].Tag')
+            echo "::group::$svc ($img)"
+
+            # Reported at HIGH, so the Security tab holds the whole picture...
+            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile .trivyignore.yaml \
+              --format sarif --output "sarif/trivy-image-$svc.sarif" \
+              --exit-code 0 "$img"
+
+            # ...and gated at CRITICAL, which is the part that stops the build. The
+            # table is the readable half: without it a red run says only "exit 1".
+            trivy image --scanners vuln --severity CRITICAL --ignore-unfixed \
+              --ignorefile .trivyignore.yaml \
+              --exit-code 1 --quiet "$img" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      - name: Publish image findings to the Security tab
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif
+          category: images
 
       # A red run here means a container is wrong, and the container logs are the only
       # place that says how. Without this the failure reads as "curl got 502" and the

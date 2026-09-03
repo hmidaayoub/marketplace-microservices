@@ -26,6 +26,14 @@ RUN npm run build
 
 # The same nginx the gateway runs, pinned the same way: two images serving over one
 # network should not differ in the thing they both are.
+#
+# This is the one image of the eight that does not drop privileges, and the reason
+# is the entrypoint rather than an omission: stock nginx starts as root to bind :80
+# and to write its pid and cache directories. Fixing it properly means the
+# unprivileged image on a high port, which moves the gateway upstream and this
+# file's own HEALTHCHECK with it. Tracked, with the same expiry, as DS-0002 in
+# .trivyignore.yaml - both scanners have to be told, so both are told in writing.
+# checkov:skip=CKV_DOCKER_3: nginx needs root to bind :80; see .trivyignore.yaml DS-0002
 FROM nginx:1.27-alpine
 
 COPY --from=build /app/dist /usr/share/nginx/html
