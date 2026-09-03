@@ -91,8 +91,15 @@ jobs:
       # whose inputs have not changed without running it, and these suites stand up a real
       # PostgreSQL through Testcontainers - the runner's own Docker daemon - so "it ran" is
       # worth the ten seconds.
+      #
+      # -race because both suites deliberately fire concurrent requests at the real unique
+      # index, and a data race in that code passes this command every time without it. The
+      # detector costs +0.3s in request-service and +2s in admin-service: the suites are
+      # dominated by container startup, not by the work it slows down. CGO_ENABLED is left
+      # alone - it defaults to 1 on the runner, which -race needs, and the Dockerfiles that
+      # ship the binaries set their own 0.
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -race
 
   python:
     name: python (${{ matrix.module }})
