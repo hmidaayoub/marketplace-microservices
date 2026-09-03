@@ -55,7 +55,7 @@ func TestCreateRequest_rejectsUnauthenticated(t *testing.T) {
 func TestCreateRequest_rejectsSeller(t *testing.T) {
 	h := newHarness(t)
 	sellerUserID := uuid.New()
-	h.profiles[sellerUserID] = uuid.New()
+	h.putProfile(sellerUserID)
 
 	res := h.do(http.MethodPost, "/api/requests", h.token(sellerUserID, auth.RoleSeller),
 		`{"itemName":"x","quantity":1}`)
@@ -118,8 +118,8 @@ func TestCreateRequest_sendsInternalApiKeyToCustomerService(t *testing.T) {
 
 	h.createRequest(token, "Keyed", 1)
 
-	if h.sawAPIKey != testInternalAPIKey {
-		t.Fatalf("customer-service saw api key %q, want %q", h.sawAPIKey, testInternalAPIKey)
+	if seen := h.apiKeySeen(); seen != testInternalAPIKey {
+		t.Fatalf("customer-service saw api key %q, want %q", seen, testInternalAPIKey)
 	}
 }
 
@@ -952,7 +952,8 @@ func TestInternalParticipants_returnsCustomerIds(t *testing.T) {
 		got[v.(string)] = true
 	}
 	for _, userID := range []uuid.UUID{creatorUserID, joinerUserID} {
-		want := h.profiles[userID].String()
+		customerID, _ := h.customerFor(userID)
+		want := customerID.String()
 		if !got[want] {
 			t.Errorf("customerIds %v is missing %s", raw, want)
 		}
