@@ -19,3 +19,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+
+# Security scan output (trivy/checkov SARIF, written by the CI security job)
+sarif/

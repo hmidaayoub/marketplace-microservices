@@ -1,0 +1,58 @@
+# Checkov's half of the security job. Trivy runs beside it; this file is mostly
+# about keeping the two from answering the same question twice.
+#
+#   checkov --config-file .checkov.yaml -d .
+
+# Checkov autodetects frameworks by sniffing file extensions, and on this repo it
+# guesses wrong twice. Naming the two it should run is what stops that:
+#
+#   terraform_plan - there is no Terraform here at all. It claims every .json file
+#     and then fails to parse frontend/tsconfig.app.json and tsconfig.node.json,
+#     reporting two parse errors on a repo that has no infrastructure-as-code.
+#
+#   openapi - it does find the two swagger.json files, but those are generated
+#     from Go annotations by swag. Findings against them are addressed by editing
+#     a generator's output, which the next `go generate` overwrites.
+#
+#   secrets - dropped deliberately, and not because it finds nothing. It finds
+#     nine: the documented dev values in docker-compose.yml (JWT_SECRET,
+#     POSTGRES_PASSWORD) and the matching ones in the Spring application-test.yml
+#     files. Trivy's secret scanner sees the same lines and reports zero, because
+#     its rules ask what a credential looks like rather than measuring entropy.
+#     Running both would mean permanently suppressing one of them, so secret
+#     scanning belongs to Trivy and policy belongs to Checkov. If that suppression
+#     ever gets written here, this is the comment it contradicts.
+framework:
+  - dockerfile
+  - github_actions
+
+directory:
+  - .
+
+skip-path:
+  # Third-party, and not ours to hold a policy over.
+  - frontend/node_modules
+  # Maven output. Present on a developer's machine, absent on the runner, and it
+  # carries copies of the test resources that would otherwise be scanned twice.
+  - target/
+  # A tool's scratch directory that happens to live under .github.
+  - .github/modernize
+
+skip-check:
+  # CKV_DOCKER_2 asks every image to carry its own HEALTHCHECK. Five do not: the
+  # four Java images and the two Go ones. That is a deployment-model disagreement
+  # rather than an oversight - every one of those services is health-checked in
+  # docker-compose.yml, where the probe can use pg_isready and a start_period the
+  # image has no way to know. The images ship no curl or wget precisely because
+  # nothing inside them needs to make that call.
+  #
+  # It is skipped here rather than silenced entirely: Trivy reports the same thing
+  # as DS-0026 at LOW severity, and the security job's misconfig gate is set at
+  # HIGH - so it stays in the log and in the SARIF, and stops being a build gate.
+  - CKV_DOCKER_2
+
+# Fail the job on any failed check. There is no severity filter available without
+# a Prisma API key, so the skip list above is the whole of the policy: anything
+# not named there is expected to pass.
+compact: true
+quiet: true
