@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   frontend:
-    name: frontend
+    name: frontend (eslint + unit + component + build)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -53,9 +53,31 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Lint
+      - name: ESLint
         run: npm run lint
 
+      # Two suites rather than one `vitest run`, because a red run should name which
+      # kind of thing broke without anyone opening the log. They split on the file
+      # extension - *.test.ts is logic, *.test.tsx is a component - so a test cannot
+      # land in the wrong one without changing the language it is written in.
+      #
+      # The logic suite: reducers, selectors, the API client and the refresh handler.
+      # No React and no rendering, so a failure here is a failure of the app's rules
+      # rather than of its markup.
+      - name: Unit tests
+        run: npm run test:unit
+
+      # The component suite: mounted with Testing Library and asserted through what a
+      # user can see. It is the layer between the units above and the e2e flows in the
+      # stack job - it catches the guard that redirects to the wrong place without
+      # paying for eight containers and a browser download to find out.
+      - name: Component tests
+        run: npm run test:component
+
+      # Last, because it is the slowest and the least specific: `tsc -b && vite build`
+      # re-runs the typecheck above and then produces the bundle the frontend image
+      # ships. What it adds over the steps before it is that the thing actually
+      # assembles - a bad import path or a missing asset fails here and nowhere else.
       - name: Build
         run: npm run build
 
