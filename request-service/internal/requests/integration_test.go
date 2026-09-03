@@ -126,11 +126,57 @@ type harness struct {
 
 	waker *countingWaker
 
+	// The stub below answers on the httptest server's goroutines - one per request, and
+	// the concurrent-create test fires several at once - while the test goroutine reads
+	// what it recorded. countingWaker above needed this lock for the same reason.
+	mu sync.Mutex
+
 	// userID -> customerID, as customer-service would resolve it.
 	profiles map[uuid.UUID]uuid.UUID
 
 	// records whether the stub was called with the right internal key
 	sawAPIKey string
+}
+
+// putProfile gives userID a customer profile, as customer-service would hold one.
+func (h *harness) putProfile(userID uuid.UUID) uuid.UUID {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	customerID := uuid.New()
+	h.profiles[userID] = customerID
+	return customerID
+}
+
+// customerFor resolves a userId to its customerId, the way /by-user/ does.
+func (h *harness) customerFor(userID uuid.UUID) (uuid.UUID, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	id, ok := h.profiles[userID]
+	return id, ok
+}
+
+// userFor is customerFor backwards, which the close path needs to address participants.
+func (h *harness) userFor(customerID uuid.UUID) (uuid.UUID, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for userID, mapped := range h.profiles {
+		if mapped == customerID {
+			return userID, true
+		}
+	}
+	return uuid.Nil, false
+}
+
+func (h *harness) recordAPIKey(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sawAPIKey = key
+}
+
+func (h *harness) apiKeySeen() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sawAPIKey
 }
 
 func newHarness(t *testing.T) *harness {
@@ -146,7 +192,7 @@ func newHarness(t *testing.T) *harness {
 
 	// Stands in for customer-service's /internal/customers/by-user/{userId}.
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.sawAPIKey = r.Header.Get(middleware.InternalAPIKeyHeader)
+		h.recordAPIKey(r.Header.Get(middleware.InternalAPIKeyHeader))
 
 		// customerId -> userId, which the close path uses to address participants.
 		if !strings.Contains(r.URL.Path, "/by-user/") {
@@ -156,13 +202,11 @@ func newHarness(t *testing.T) *harness {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			for userID, mapped := range h.profiles {
-				if mapped == customerID {
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]string{
-						"customerId": customerID.String(), "userId": userID.String()})
-					return
-				}
+			if userID, ok := h.userFor(customerID); ok {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"customerId": customerID.String(), "userId": userID.String()})
+				return
 			}
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -174,7 +218,7 @@ func newHarness(t *testing.T) *harness {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		customerID, ok := h.profiles[userID]
+		customerID, ok := h.customerFor(userID)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -200,7 +244,7 @@ func newHarness(t *testing.T) *harness {
 // newCustomer builds a customer with a profile and returns their userId and token.
 func (h *harness) newCustomer() (uuid.UUID, string) {
 	userID := uuid.New()
-	h.profiles[userID] = uuid.New()
+	h.putProfile(userID)
 	return userID, h.token(userID, auth.RoleCustomer)
 }
 
