@@ -208,7 +208,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      # Only for the SARIF upload. That is what puts a finding on the Security tab
+      # Only for the SARIF uploads. They are what put a finding on the Security tab
       # against a file and a line, rather than leaving it in a job log that gets read
       # once and only when it is already red. The repository is public, so code
       # scanning needs no Advanced Security licence.
@@ -216,16 +216,47 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Java, before any scanning, and not because anything here compiles.
+      #
+      # Trivy reads pom.xml, and a pom does not carry the versions of what it depends
+      # on - those live in the parent, spring-boot-starter-parent, which Trivy resolves
+      # by fetching it. On a GitHub runner that fetch goes to repo.maven.apache.org from
+      # a shared IP and comes back 429 Too Many Requests, which is fatal rather than
+      # degraded: the scan stops, and it stops the same way for `--scanners misconfig`,
+      # because the file walk runs the pom analyzer whatever the scanners are set to.
+      #
+      # Populating ~/.m2 first is Trivy's own advice for this, and `install` rather than
+      # `dependency:resolve` because three of the four modules compile against
+      # common-security, which resolve cannot find until it has been built into the
+      # local repository. Measured cold: 1m22s, and setup-java's cache makes the usual
+      # case faster than that.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Populate the Maven cache the pom scan reads
+        run: mvn -B -ntp -q -DskipTests install
+
       # The binary rather than aquasecurity/trivy-action, for two reasons. The baseline
-      # in .trivyignore.yaml was taken against exactly this version, and the four
-      # invocations below then share one downloaded vulnerability database instead of
-      # each step fetching its own.
+      # in .trivyignore.yaml was taken against exactly this version, and the invocations
+      # below then share one downloaded vulnerability database instead of each step
+      # fetching its own.
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin v0.74.0
           trivy --version
 
+      # --offline-scan pins the consequence of the step above: having put every pom in
+      # ~/.m2, forbid the network entirely, so a rate-limited Maven Central cannot fail
+      # a build again. It is not a fix on its own and must never be used as one - with
+      # an empty cache the same flag takes this repository from 310 findings to 4, all
+      # four of them Go, because an unresolvable parent means no Java dependency has a
+      # version and none can be matched against the database. That is a green scan that
+      # checks nothing.
+      #
       # --ignore-unfixed is the difference between a gate and a nuisance. A CVE with no
       # released fix is not something this branch can act on, and reporting it as a
       # build failure means the only way back to green is to stop believing the tool.
@@ -246,6 +277,7 @@ jobs:
             --scanners vuln,secret \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
+            --offline-scan \
             --ignorefile .trivyignore.yaml \
             --skip-dirs frontend/node_modules \
             --format sarif --output sarif/trivy-deps.sarif \
@@ -263,9 +295,11 @@ jobs:
       - name: Trivy - Dockerfile misconfiguration
         if: '!cancelled()'
         run: |
+          mkdir -p sarif
           trivy fs \
             --scanners misconfig \
             --severity HIGH,CRITICAL \
+            --offline-scan \
             --ignorefile .trivyignore.yaml \
             --skip-dirs frontend/node_modules \
             --format sarif --output sarif/trivy-config.sarif \
@@ -286,16 +320,39 @@ jobs:
       # the policy rather than a footnote to it.
       - name: Checkov - Dockerfile and workflow policy
         if: '!cancelled()'
-        run: checkov --config-file .checkov.yaml -o cli -o sarif --output-file-path console,sarif/checkov.sarif
+        run: |
+          mkdir -p sarif
+          checkov --config-file .checkov.yaml -o cli -o sarif --output-file-path console,sarif/checkov.sarif
 
-      # A directory, so all three reports upload in one call. if: !cancelled() because
-      # the run worth uploading is the failing one - a report that only publishes when
-      # there is nothing to report is not a report.
-      - name: Publish findings to the Security tab
+      # Three uploads with three categories, rather than one pointed at the directory.
+      #
+      # Code scanning keys an analysis by category, and derives the category from the
+      # run's tool name when the SARIF does not name one. Trivy writes "Trivy" into
+      # both of its reports and names no category, so a directory upload presents two
+      # runs claiming the same one and the action rejects the whole submission. It
+      # happens to be accepted today only because both reports are empty while the
+      # baseline holds - the first real misconfiguration finding would start failing
+      # every upload, including the dependency findings that were fine.
+      - name: Publish dependency findings
         if: '!cancelled()'
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: sarif
+          sarif_file: sarif/trivy-deps.sarif
+          category: trivy-dependencies
+
+      - name: Publish misconfiguration findings
+        if: '!cancelled()'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif/trivy-config.sarif
+          category: trivy-misconfiguration
+
+      - name: Publish policy findings
+        if: '!cancelled()'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif/checkov.sarif
+          category: checkov
 
   # The four jobs above test the five toolchains apart. None of them builds an image,
   # starts a service, or sends a request through the gateway - so the whole layer the
@@ -420,12 +477,27 @@ jobs:
           done
           exit $rc
 
+      # Eight reports become one, because eight cannot be uploaded together. Each is a
+      # run whose tool is "Trivy" and which names no category, so code scanning derives
+      # the same category for all eight and refuses the submission outright:
+      # "does not support uploading multiple SARIF runs with the same category".
+      #
+      # The merge is a script rather than a jq one-liner because two details are easy to
+      # get silently wrong: results[].ruleIndex is positional and has to be renumbered
+      # against the combined rule list, and only some findings say which image they came
+      # from - an OS package is located at library/marketplace-microservices-frontend,
+      # while a Python one is located at "Python" in all three Python images. The script
+      # labels every result with its image so the merge loses no attribution.
+      - name: Merge the image reports into one
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python3 scripts/merge-trivy-sarif.py sarif/trivy-images.sarif sarif/trivy-image-*.sarif
+
       - name: Publish image findings to the Security tab
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: sarif
-          category: images
+          sarif_file: sarif/trivy-images.sarif
+          category: trivy-images
 
       # A red run here means a container is wrong, and the container logs are the only
       # place that says how. Without this the failure reads as "curl got 502" and the
